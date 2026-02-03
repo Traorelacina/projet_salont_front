@@ -13,6 +13,8 @@ import {
   Alert,
   Switch,
   FormControlLabel,
+  CircularProgress,
+  Snackbar,
 } from '@mui/material';
 import { DataGrid } from '@mui/x-data-grid';
 import { Add, Edit, Delete, ToggleOn, ToggleOff } from '@mui/icons-material';
@@ -30,6 +32,9 @@ const Prestations = () => {
     actif: true,
   });
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+  const [existingLibelles, setExistingLibelles] = useState(new Set());
 
   useEffect(() => {
     loadPrestations();
@@ -39,9 +44,13 @@ const Prestations = () => {
     try {
       setLoading(true);
       const response = await prestationsAPI.getAll();
-      // Les prestations ne sont pas paginées selon le backend
       const prestationsData = response.data.data || [];
       setPrestations(prestationsData);
+      
+      // Créer un Set des libellés existants pour validation côté client
+      const libelles = new Set(prestationsData.map(p => p.libelle?.toLowerCase().trim()));
+      setExistingLibelles(libelles);
+      
       setError('');
     } catch (error) {
       console.error('Error loading prestations:', error);
@@ -74,6 +83,7 @@ const Prestations = () => {
     setSelectedPrestation(null);
     setFormData({ libelle: '', prix: '', description: '', actif: true });
     setError('');
+    setSubmitting(false);
   };
 
   const handleChange = (e) => {
@@ -82,40 +92,87 @@ const Prestations = () => {
       ...formData, 
       [name]: name === 'actif' ? checked : value 
     });
+    // Effacer l'erreur quand l'utilisateur modifie
+    if (error) setError('');
+  };
+
+  const isLibelleUnique = (libelle) => {
+    if (!libelle || !libelle.trim()) return true;
+    
+    const normalizedLibelle = libelle.toLowerCase().trim();
+    
+    if (selectedPrestation) {
+      const currentLibelle = selectedPrestation.libelle?.toLowerCase().trim();
+      if (currentLibelle === normalizedLibelle) return true;
+    }
+    
+    return !existingLibelles.has(normalizedLibelle);
+  };
+
+  const showSnackbar = (message, severity = 'success') => {
+    setSnackbar({ open: true, message, severity });
   };
 
   const handleSubmit = async () => {
-    // Validation basique
+    // Validation
     if (!formData.libelle.trim()) {
       setError('Le nom de la prestation est obligatoire');
       return;
     }
+
+    if (!isLibelleUnique(formData.libelle)) {
+      setError('Ce nom de prestation existe déjà. Veuillez en choisir un autre.');
+      return;
+    }
+
     if (!formData.prix || parseFloat(formData.prix) < 0) {
       setError('Le prix doit être un nombre positif');
       return;
     }
 
+    setSubmitting(true);
+    setError('');
+
     try {
       const dataToSend = {
-        libelle: formData.libelle,
+        libelle: formData.libelle.trim(),
         prix: parseFloat(formData.prix),
-        description: formData.description || '',
+        description: formData.description.trim() || '',
         actif: formData.actif,
       };
 
       if (selectedPrestation) {
         await prestationsAPI.update(selectedPrestation.id, dataToSend);
+        showSnackbar('Prestation modifiée avec succès', 'success');
       } else {
         await prestationsAPI.create(dataToSend);
+        showSnackbar('Prestation créée avec succès', 'success');
       }
+      
       handleCloseDialog();
       loadPrestations();
     } catch (error) {
       console.error('Error saving prestation:', error);
-      const errorMessage = error.response?.data?.errors 
-        ? Object.values(error.response.data.errors).flat().join(', ')
-        : error.response?.data?.message || 'Erreur lors de l\'enregistrement';
+      
+      let errorMessage = 'Erreur lors de l\'enregistrement';
+      
+      if (error.response?.status === 422) {
+        const errors = error.response.data.errors;
+        if (errors?.libelle) {
+          errorMessage = errors.libelle[0] || 'Ce nom de prestation existe déjà.';
+        } else {
+          errorMessage = Object.values(errors).flat().join(', ');
+        }
+      } else if (error.response?.status === 409) {
+        errorMessage = 'Ce nom de prestation existe déjà. Veuillez en choisir un autre.';
+      } else {
+        errorMessage = error.response?.data?.message || 'Erreur lors de l\'enregistrement';
+      }
+      
       setError(errorMessage);
+      showSnackbar(errorMessage, 'error');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -123,10 +180,13 @@ const Prestations = () => {
     if (window.confirm('Êtes-vous sûr de vouloir supprimer cette prestation ?')) {
       try {
         await prestationsAPI.delete(id);
+        showSnackbar('Prestation supprimée avec succès', 'success');
         loadPrestations();
       } catch (error) {
         console.error('Error deleting prestation:', error);
-        setError('Erreur lors de la suppression de la prestation');
+        const errorMessage = error.response?.data?.message || 'Erreur lors de la suppression de la prestation';
+        setError(errorMessage);
+        showSnackbar(errorMessage, 'error');
       }
     }
   };
@@ -134,10 +194,13 @@ const Prestations = () => {
   const handleToggleActive = async (id) => {
     try {
       await prestationsAPI.toggleActive(id);
+      showSnackbar('Statut modifié avec succès', 'success');
       loadPrestations();
     } catch (error) {
       console.error('Error toggling prestation:', error);
-      setError('Erreur lors du changement de statut');
+      const errorMessage = error.response?.data?.message || 'Erreur lors du changement de statut';
+      setError(errorMessage);
+      showSnackbar(errorMessage, 'error');
     }
   };
 
@@ -275,7 +338,7 @@ const Prestations = () => {
         />
       </Box>
 
-      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
+      <Dialog open={openDialog} onClose={!submitting ? handleCloseDialog : undefined} maxWidth="sm" fullWidth>
         <DialogTitle>
           {selectedPrestation ? 'Modifier la prestation' : 'Nouvelle prestation'}
         </DialogTitle>
@@ -287,17 +350,20 @@ const Prestations = () => {
           )}
           <TextField
             fullWidth
-            label="Nom de la prestation"
+            label="Nom de la prestation *"
             name="libelle"
             value={formData.libelle}
             onChange={handleChange}
             required
             sx={{ mt: 2, mb: 2 }}
             placeholder="Ex: Coupe cheveux"
+            disabled={submitting}
+            error={error && error.includes('nom de prestation')}
+            helperText={!isLibelleUnique(formData.libelle) && formData.libelle.trim() ? "Ce nom existe déjà" : ""}
           />
           <TextField
             fullWidth
-            label="Prix (FCFA)"
+            label="Prix (FCFA) *"
             name="prix"
             type="number"
             value={formData.prix}
@@ -306,6 +372,7 @@ const Prestations = () => {
             sx={{ mb: 2 }}
             placeholder="Ex: 2000"
             inputProps={{ min: 0, step: 100 }}
+            disabled={submitting}
           />
           <TextField
             fullWidth
@@ -317,6 +384,7 @@ const Prestations = () => {
             rows={3}
             sx={{ mb: 2 }}
             placeholder="Description optionnelle..."
+            disabled={submitting}
           />
           <FormControlLabel
             control={
@@ -325,20 +393,42 @@ const Prestations = () => {
                 onChange={handleChange}
                 name="actif"
                 color="success"
+                disabled={submitting}
               />
             }
             label="Prestation active"
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={handleCloseDialog}>
+          <Button onClick={handleCloseDialog} disabled={submitting}>
             Annuler
           </Button>
-          <Button onClick={handleSubmit} variant="contained">
-            Enregistrer
+          <Button 
+            onClick={handleSubmit} 
+            variant="contained"
+            disabled={submitting}
+            startIcon={submitting ? <CircularProgress size={20} /> : null}
+          >
+            {submitting ? 'Enregistrement...' : 'Enregistrer'}
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity}
+          variant="filled"
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

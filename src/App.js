@@ -14,7 +14,8 @@ import Prestations from './pages/Prestations';
 import Passages from './pages/Passages';
 import Paiements from './pages/Paiements';
 import Statistiques from './pages/Statistiques';
-import Settings from './pages/Settings'; // Nouvelle page
+import Settings from './pages/Settings';
+import Users from './pages/Users'; // Nouvelle page de gestion des utilisateurs
 
 // Components
 import Layout from './components/Layout';
@@ -99,6 +100,16 @@ function AppContent() {
             }
           />
           <Route
+            path="/users"
+            element={
+              <PrivateRoute>
+                <Layout>
+                  <Users />
+                </Layout>
+              </PrivateRoute>
+            }
+          />
+          <Route
             path="/settings"
             element={
               <PrivateRoute>
@@ -125,4 +136,4 @@ function App() {
   );
 }
 
-export default App; 
+export default App;

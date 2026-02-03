@@ -43,11 +43,10 @@ const Clients = () => {
     try {
       setLoading(true);
       const response = await clientsAPI.getAll({
-        page: paginationModel.page + 1, // Laravel commence à 1
+        page: paginationModel.page + 1,
         per_page: paginationModel.pageSize,
       });
       
-      // Gestion de la structure paginée de Laravel
       const paginatedData = response.data.data;
       const clientsData = paginatedData.data || [];
       
@@ -69,7 +68,7 @@ const Clients = () => {
       setFormData({
         nom: client.nom,
         prenom: client.prenom,
-        telephone: client.telephone,
+        telephone: client.telephone || '',
       });
     } else {
       setSelectedClient(null);
@@ -91,25 +90,56 @@ const Clients = () => {
   };
 
   const handleSubmit = async () => {
-    // Validation basique
-    if (!formData.nom.trim() || !formData.prenom.trim() || !formData.telephone.trim()) {
-      setError('Tous les champs sont obligatoires');
+    // Validation - seuls nom et prénom sont obligatoires
+    if (!formData.nom.trim() || !formData.prenom.trim()) {
+      setError('Le nom et le prénom sont obligatoires');
       return;
     }
 
     try {
+      // Préparer les données à envoyer (ne pas envoyer de chaîne vide pour le téléphone)
+      const dataToSend = {
+        nom: formData.nom.trim(),
+        prenom: formData.prenom.trim(),
+      };
+      
+      // Ajouter le téléphone seulement s'il n'est pas vide
+      if (formData.telephone && formData.telephone.trim()) {
+        dataToSend.telephone = formData.telephone.trim();
+      }
+
       if (selectedClient) {
-        await clientsAPI.update(selectedClient.id, formData);
+        // Mise à jour d'un client existant
+        await clientsAPI.update(selectedClient.id, dataToSend);
       } else {
-        await clientsAPI.create(formData);
+        // Création d'un nouveau client
+        const response = await clientsAPI.create(dataToSend);
+        
+        // Vérifier que le code client a bien été généré
+        if (!response.data.data.code_client) {
+          setError('Erreur: Le code client n\'a pas pu être généré. Veuillez réessayer.');
+          return;
+        }
       }
       handleCloseDialog();
       loadClients();
     } catch (error) {
       console.error('Error saving client:', error);
-      const errorMessage = error.response?.data?.errors 
-        ? Object.values(error.response.data.errors).flat().join(', ')
-        : error.response?.data?.message || 'Erreur lors de l\'enregistrement';
+      
+      // Gestion détaillée des erreurs
+      let errorMessage = 'Erreur lors de l\'enregistrement';
+      
+      if (error.response?.data?.errors) {
+        // Erreurs de validation Laravel
+        errorMessage = Object.values(error.response.data.errors).flat().join(', ');
+      } else if (error.response?.data?.message) {
+        // Message d'erreur personnalisé du serveur
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        // Erreur réseau ou autre
+        errorMessage = error.message;
+      }
+      
       setError(errorMessage);
     }
   };
@@ -127,12 +157,21 @@ const Clients = () => {
   };
 
   const columns = [
-    { 
-      field: 'id', 
-      headerName: 'ID', 
-      width: 80,
+   
+    {
+      field: 'code_client',
+      headerName: 'Code',
+      width: 120,
       headerAlign: 'center',
       align: 'center',
+      renderCell: (params) => (
+        <Chip 
+          label={params.value} 
+          color="secondary" 
+          size="small"
+          sx={{ fontWeight: 600, fontFamily: 'monospace' }}
+        />
+      ),
     },
     {
       field: 'prenom',
@@ -153,8 +192,16 @@ const Clients = () => {
       minWidth: 150,
       renderCell: (params) => (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Phone sx={{ fontSize: 16, color: 'text.secondary' }} />
-          {params.value}
+          {params.value ? (
+            <>
+              <Phone sx={{ fontSize: 16, color: 'text.secondary' }} />
+              {params.value}
+            </>
+          ) : (
+            <Typography variant="body2" color="text.disabled" fontStyle="italic">
+              Non renseigné
+            </Typography>
+          )}
         </Box>
       ),
     },
@@ -263,6 +310,7 @@ const Clients = () => {
               {error}
             </Alert>
           )}
+          
           <TextField
             fullWidth
             label="Prénom"
@@ -283,19 +331,22 @@ const Clients = () => {
           />
           <TextField
             fullWidth
-            label="Téléphone"
+            label="Téléphone (optionnel)"
             name="telephone"
             value={formData.telephone}
             onChange={handleChange}
-            required
             placeholder="Ex: +225 01 02 03 04 05"
+            helperText="Le numéro de téléphone est optionnel"
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={handleCloseDialog}>
             Annuler
           </Button>
-          <Button onClick={handleSubmit} variant="contained">
+          <Button 
+            onClick={handleSubmit} 
+            variant="contained"
+          >
             Enregistrer
           </Button>
         </DialogActions>

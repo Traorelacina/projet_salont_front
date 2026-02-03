@@ -33,6 +33,13 @@ import {
   Zoom,
   Slide,
   Grow,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
+  Stack,
+  Avatar,
+  alpha,
 } from '@mui/material';
 import { DataGrid } from '@mui/x-data-grid';
 import { 
@@ -54,6 +61,10 @@ import {
   ArrowForward,
   Download,
   Receipt,
+  Remove,
+  PercentOutlined,
+  ReceiptLong,
+  Loyalty,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { passagesAPI, clientsAPI, prestationsAPI, paiementsAPI } from '../services/api';
@@ -77,17 +88,32 @@ const ClientSearchItem = React.memo(({ client, onSelect }) => (
       primary={
         <Typography variant="body1" sx={{ fontWeight: 600 }}>
           {client.prenom} {client.nom}
+          {client.code_client && (
+            <Chip 
+              label={client.code_client} 
+              size="small" 
+              sx={{ ml: 1, fontWeight: 600 }}
+              variant="outlined"
+              color="primary"
+            />
+          )}
         </Typography>
       }
       secondary={
         <>
           <Box component="span" sx={{ display: 'flex', gap: 2, mt: 0.5 }}>
-            <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-              <Phone sx={{ fontSize: 14 }} />
-              <Typography variant="body2" component="span">
-                {client.telephone}
+            {client.telephone ? (
+              <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                <Phone sx={{ fontSize: 14 }} />
+                <Typography variant="body2" component="span">
+                  {client.telephone}
+                </Typography>
+              </Box>
+            ) : (
+              <Typography variant="body2" component="span" sx={{ fontStyle: 'italic', color: 'text.disabled' }}>
+                Pas de téléphone
               </Typography>
-            </Box>
+            )}
             <Typography variant="body2" component="span" sx={{ color: 'primary.main', fontWeight: 600 }}>
               {client.nombre_passages || 0} passage(s)
             </Typography>
@@ -101,11 +127,25 @@ const ClientSearchItem = React.memo(({ client, onSelect }) => (
 
 ClientSearchItem.displayName = 'ClientSearchItem';
 
-// Composant optimisé pour la ligne de prestation
-const PrestationRow = React.memo(({ prestation, selected, onToggle }) => {
+// Composant optimisé pour la ligne de prestation avec contrôle de quantité
+const PrestationRow = React.memo(({ prestation, selected, selectedPrestation, onToggle, onQuantityChange }) => {
   const handleClick = useCallback(() => {
     onToggle(prestation);
   }, [prestation, onToggle]);
+
+  const handleIncrement = useCallback((e) => {
+    e.stopPropagation();
+    if (selected && selectedPrestation) {
+      onQuantityChange(prestation.id, selectedPrestation.quantite + 1);
+    }
+  }, [selected, selectedPrestation, prestation.id, onQuantityChange]);
+
+  const handleDecrement = useCallback((e) => {
+    e.stopPropagation();
+    if (selected && selectedPrestation && selectedPrestation.quantite > 1) {
+      onQuantityChange(prestation.id, selectedPrestation.quantite - 1);
+    }
+  }, [selected, selectedPrestation, prestation.id, onQuantityChange]);
 
   return (
     <TableRow 
@@ -114,9 +154,9 @@ const PrestationRow = React.memo(({ prestation, selected, onToggle }) => {
       sx={{ 
         cursor: 'pointer',
         transition: 'all 0.2s ease',
+        bgcolor: selected ? 'primary.lighter' : 'transparent',
         '&:hover': {
-          bgcolor: 'action.hover',
-          transform: 'scale(1.01)',
+          bgcolor: selected ? 'primary.light' : 'action.hover',
         },
       }}
     >
@@ -130,10 +170,57 @@ const PrestationRow = React.memo(({ prestation, selected, onToggle }) => {
         />
       </TableCell>
       <TableCell>{prestation.libelle || prestation.nom}</TableCell>
+      <TableCell align="center">
+        {selected ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
+            <IconButton 
+              size="small" 
+              onClick={handleDecrement}
+              disabled={!selectedPrestation || selectedPrestation.quantite <= 1}
+              sx={{ 
+                bgcolor: 'background.paper',
+                '&:hover': { bgcolor: 'error.light', color: 'error.main' }
+              }}
+            >
+              <Remove fontSize="small" />
+            </IconButton>
+            <Typography sx={{ 
+              minWidth: 30, 
+              textAlign: 'center', 
+              fontWeight: 700,
+              fontSize: '1.1rem',
+              color: 'primary.main'
+            }}>
+              {selectedPrestation?.quantite || 1}
+            </Typography>
+            <IconButton 
+              size="small" 
+              onClick={handleIncrement}
+              sx={{ 
+                bgcolor: 'background.paper',
+                '&:hover': { bgcolor: 'success.light', color: 'success.main' }
+              }}
+            >
+              <Add fontSize="small" />
+            </IconButton>
+          </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary">-</Typography>
+        )}
+      </TableCell>
       <TableCell align="right">
         <Typography sx={{ fontWeight: 600, color: 'primary.main' }}>
           {prestation.prix} FCFA
         </Typography>
+      </TableCell>
+      <TableCell align="right">
+        {selected && selectedPrestation ? (
+          <Typography sx={{ fontWeight: 700, color: 'success.main', fontSize: '1.1rem' }}>
+            {prestation.prix * selectedPrestation.quantite} FCFA
+          </Typography>
+        ) : (
+          <Typography variant="body2" color="text.secondary">-</Typography>
+        )}
       </TableCell>
     </TableRow>
   );
@@ -223,7 +310,7 @@ const RedirectAnimation = () => {
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
               <ArrowForward sx={{ animation: 'slideRight 1.5s infinite' }} />
               <Typography variant="body2" color="success.main" sx={{ fontWeight: 600 }}>
-                Redirection vers la page paiements
+                Téléchargement du reçu en cours
               </Typography>
             </Box>
           </Fade>
@@ -267,7 +354,7 @@ const Passages = () => {
   const [selectedClient, setSelectedClient] = useState(null);
   const [showNewClientForm, setShowNewClientForm] = useState(false);
 
-  // États pour le nouveau client
+  // États pour le nouveau client - SANS CODE CLIENT visible
   const [newClientData, setNewClientData] = useState({
     nom: '',
     prenom: '',
@@ -278,13 +365,12 @@ const Passages = () => {
   const [selectedPrestations, setSelectedPrestations] = useState([]);
   const [fidelityInfo, setFidelityInfo] = useState(null);
 
-  // États pour le paiement
-  const [showPaymentDialog, setShowPaymentDialog] = useState(false);
-  const [paymentData, setPaymentData] = useState({
-    montant_paye: 0,
-    mode_paiement: 'especes',
-  });
-  const [currentPassage, setCurrentPassage] = useState(null);
+  // États pour la remise
+  const [remiseType, setRemiseType] = useState('aucune');
+  const [remiseValue, setRemiseValue] = useState('');
+
+  // États pour le paiement (mode de paiement seulement)
+  const [modePaiement, setModePaiement] = useState('especes');
 
   // États pour les notifications
   const [notification, setNotification] = useState({
@@ -295,10 +381,12 @@ const Passages = () => {
 
   // État pour l'animation de redirection
   const [showRedirectAnimation, setShowRedirectAnimation] = useState(false);
+  
+  // État pour le dialogue de félicitations
+  const [showCongratulationsDialog, setShowCongratulationsDialog] = useState(false);
 
   // États pour les actions en cours
   const [creatingPassage, setCreatingPassage] = useState(false);
-  const [creatingPayment, setCreatingPayment] = useState(false);
 
   // Ref pour le debounce
   const searchTimeoutRef = useRef(null);
@@ -370,7 +458,8 @@ const Passages = () => {
         return fullName.includes(searchLower) ||
                client.nom.toLowerCase().includes(searchLower) ||
                client.prenom.toLowerCase().includes(searchLower) ||
-               client.telephone.includes(query);
+               (client.telephone && client.telephone.includes(query)) ||
+               client.code_client?.toLowerCase().includes(searchLower);
       });
       
       setSearchResults(filteredClients);
@@ -421,20 +510,32 @@ const Passages = () => {
 
   // Créer un nouveau client avec useCallback
   const handleCreateClient = useCallback(async () => {
-    if (!newClientData.nom || !newClientData.prenom || !newClientData.telephone) {
-      setError('Veuillez remplir tous les champs obligatoires');
+    // Validation - seuls nom et prénom sont obligatoires
+    if (!newClientData.nom || !newClientData.prenom) {
+      setError('Le nom et le prénom sont obligatoires');
       return;
     }
 
     try {
-      const response = await clientsAPI.create(newClientData);
+      // Préparer les données - ne pas envoyer de chaîne vide pour le téléphone
+      const dataToSend = {
+        nom: newClientData.nom.trim(),
+        prenom: newClientData.prenom.trim(),
+      };
+      
+      // Ajouter le téléphone seulement s'il n'est pas vide
+      if (newClientData.telephone && newClientData.telephone.trim()) {
+        dataToSend.telephone = newClientData.telephone.trim();
+      }
+
+      const response = await clientsAPI.create(dataToSend);
       const newClient = response.data.data;
       
       setShowNewClientForm(false);
       setNewClientData({ nom: '', prenom: '', telephone: '' });
       setError('');
       
-      showNotification(`Client ${newClient.prenom} ${newClient.nom} créé avec succès`);
+      showNotification(`Client ${newClient.prenom} ${newClient.nom} créé avec succès (${newClient.code_client})`);
       handleSelectClient(newClient);
     } catch (error) {
       console.error('Error creating client:', error);
@@ -464,16 +565,52 @@ const Passages = () => {
     });
   }, []);
 
+  // Gérer le changement de quantité
+  const handleQuantityChange = useCallback((prestationId, newQuantity) => {
+    setSelectedPrestations(prev => 
+      prev.map(p => 
+        p.id === prestationId 
+          ? { ...p, quantite: Math.max(1, newQuantity) }
+          : p
+      )
+    );
+  }, []);
+
   // Vérifier si une prestation est sélectionnée (mémorisé)
   const isPrestationSelected = useCallback((prestationId) => {
     return selectedPrestations.some(p => p.id === prestationId);
   }, [selectedPrestations]);
 
+  // Obtenir la prestation sélectionnée
+  const getSelectedPrestation = useCallback((prestationId) => {
+    return selectedPrestations.find(p => p.id === prestationId);
+  }, [selectedPrestations]);
+
+  // Calculer le sous-total avec useMemo
+  const calculateSubtotal = useMemo(() => {
+    return selectedPrestations.reduce((total, p) => total + (p.prix * p.quantite), 0);
+  }, [selectedPrestations]);
+
+  // Calculer la remise avec useMemo
+  const calculateRemise = useMemo(() => {
+    if (remiseType === 'aucune' || !remiseValue || remiseValue === '') return 0;
+    const numericValue = Number(remiseValue);
+    if (isNaN(numericValue) || numericValue <= 0) return 0;
+    
+    if (remiseType === 'pourcentage') {
+      return Math.round((calculateSubtotal * numericValue) / 100);
+    }
+    if (remiseType === 'montant') {
+      return Math.min(numericValue, calculateSubtotal);
+    }
+    return 0;
+  }, [remiseType, remiseValue, calculateSubtotal]);
+
   // Calculer le montant total avec useMemo
   const calculateTotal = useMemo(() => {
     if (fidelityInfo?.est_gratuit) return 0;
-    return selectedPrestations.reduce((total, p) => total + (p.prix * p.quantite), 0);
-  }, [selectedPrestations, fidelityInfo]);
+    return Math.max(0, calculateSubtotal - calculateRemise);
+  }, [calculateSubtotal, calculateRemise, fidelityInfo]);
 
   // Fermer le dialogue avec useCallback
   const handleCloseDialog = useCallback(() => {
@@ -481,11 +618,14 @@ const Passages = () => {
     setSelectedClient(null);
     setSelectedPrestations([]);
     setFidelityInfo(null);
+    setRemiseType('aucune');
+    setRemiseValue('');
+    setModePaiement('especes');
     setError('');
   }, []);
 
-  // Créer le passage avec useCallback (optimisé)
-  const handleCreatePassage = useCallback(async () => {
+  // Créer le passage ET le paiement en un seul clic
+  const handleCreatePassageAndPayment = useCallback(async () => {
     if (!selectedClient) {
       setError('Veuillez sélectionner un client');
       return;
@@ -498,6 +638,7 @@ const Passages = () => {
     setCreatingPassage(true);
 
     try {
+      // 1. Créer le passage
       const passageData = {
         client_id: selectedClient.id,
         date_passage: new Date().toISOString(),
@@ -505,28 +646,69 @@ const Passages = () => {
           id: p.id,
           quantite: p.quantite,
         })),
-        notes: '',
+        notes: remiseType !== 'aucune' && remiseValue 
+          ? `Remise appliquée: ${remiseType === 'pourcentage' ? `${remiseValue}%` : `${remiseValue} FCFA`}` 
+          : '',
       };
 
-      const response = await passagesAPI.create(passageData);
-      const newPassage = response.data.data.passage;
+      const passageResponse = await passagesAPI.create(passageData);
+      const newPassage = passageResponse.data.data.passage;
       
-      setCurrentPassage(newPassage);
       handleCloseDialog();
       
-      showNotification(`Passage #${newPassage.id} créé avec succès`);
-      
+      // 2. Vérifier si c'est un passage gratuit
       if (newPassage.est_gratuit) {
+        // Afficher le dialogue de félicitations
+        setShowCongratulationsDialog(true);
+        showNotification(`Passage #${newPassage.id} créé - Passage gratuit offert !`, 'success');
         loadData();
-      } else {
-        const montantTotal = newPassage.montant_total || calculateTotal;
-        setPaymentData({
-          montant_paye: montantTotal,
-          mode_paiement: 'especes',
-        });
-        setShowPaymentDialog(true);
-        showNotification(`Veuillez procéder au paiement de ${montantTotal} FCFA`, 'info');
+        return;
       }
+
+      // 3. Créer le paiement automatiquement
+      const montantTotal = calculateTotal;
+      
+      const paymentResponse = await paiementsAPI.create({
+        passage_id: newPassage.id,
+        montant_paye: montantTotal,
+        mode_paiement: modePaiement,
+        date_paiement: new Date().toISOString(),
+      });
+
+      showNotification(`Passage #${newPassage.id} créé et paiement enregistré avec succès !`, 'success');
+      
+      // 4. Afficher l'animation et télécharger le reçu
+      setShowRedirectAnimation(true);
+      
+      // 5. Télécharger le reçu PDF
+      setTimeout(async () => {
+        try {
+          const receiptResponse = await paiementsAPI.getReceipt(paymentResponse.data.data.id);
+          
+          // Créer un blob et télécharger
+          const blob = new Blob([receiptResponse.data], { type: 'application/pdf' });
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `recu-${paymentResponse.data.data.numero_recu || paymentResponse.data.data.id}.pdf`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          window.URL.revokeObjectURL(url);
+          
+          showNotification('Reçu téléchargé avec succès !', 'success');
+        } catch (error) {
+          console.error('Error downloading receipt:', error);
+          showNotification('Paiement enregistré mais erreur lors du téléchargement du reçu', 'warning');
+        }
+        
+        // 6. Masquer l'animation et recharger les données
+        setTimeout(() => {
+          setShowRedirectAnimation(false);
+          loadData();
+        }, 1000);
+      }, 2000);
+      
     } catch (error) {
       console.error('Error creating passage:', error);
       const errorMessage = error.response?.data?.errors 
@@ -537,52 +719,21 @@ const Passages = () => {
     } finally {
       setCreatingPassage(false);
     }
-  }, [selectedClient, selectedPrestations, handleCloseDialog, calculateTotal, loadData, showNotification]);
+  }, [selectedClient, selectedPrestations, calculateTotal, modePaiement, remiseType, remiseValue, handleCloseDialog, loadData, showNotification]);
 
-  // Enregistrer le paiement avec useCallback (optimisé)
-  const handleCreatePayment = useCallback(async () => {
-    if (!currentPassage) return;
-
-    setCreatingPayment(true);
-
-    try {
-      const paymentResponse = await paiementsAPI.create({
-        passage_id: currentPassage.id,
-        montant_paye: paymentData.montant_paye,
-        mode_paiement: paymentData.mode_paiement,
-        date_paiement: new Date().toISOString(),
-      });
-
-      setShowPaymentDialog(false);
-      setCurrentPassage(null);
-      setPaymentData({
-        montant_paye: 0,
-        mode_paiement: 'especes',
-      });
-      
-      showNotification(`Paiement de ${paymentData.montant_paye} FCFA enregistré avec succès`, 'success');
-      
-      setShowRedirectAnimation(true);
-      
-      setTimeout(() => {
-        navigate('/paiements', { 
-          state: { 
-            showReceipt: true,
-            paymentId: paymentResponse.data.data.id,
-            passageId: currentPassage.id
-          } 
-        });
-      }, 2500);
-      
-      loadData();
-    } catch (error) {
-      console.error('Error creating payment:', error);
-      setError('Erreur lors de l\'enregistrement du paiement');
-      showNotification('Erreur lors de l\'enregistrement du paiement', 'error');
-    } finally {
-      setCreatingPayment(false);
-    }
-  }, [currentPassage, paymentData, navigate, loadData, showNotification]);
+  // Gérer la confirmation des félicitations et redirection
+  const handleCongratulationsConfirm = useCallback(async () => {
+    setShowCongratulationsDialog(false);
+    setShowRedirectAnimation(true);
+    
+    // Recharger les données
+    loadData();
+    
+    // Masquer l'animation après quelques secondes
+    setTimeout(() => {
+      setShowRedirectAnimation(false);
+    }, 2500);
+  }, [loadData]);
 
   // Supprimer un passage avec useCallback
   const handleDelete = useCallback(async (id) => {
@@ -599,19 +750,59 @@ const Passages = () => {
     }
   }, [loadData, showNotification]);
 
-  // Définition des colonnes avec useMemo
+  // Définition des colonnes avec useMemo - Code client en première colonne, téléphone sous le nom
   const columns = useMemo(() => [
-    { 
-      field: 'id', 
-      headerName: 'ID', 
-      width: 80,
+    {
+      field: 'code_client',
+      headerName: 'Code Client',
+      width: 130,
       headerAlign: 'center',
       align: 'center',
+      renderCell: (params) => {
+        const client = params.row?.client;
+        return client?.code_client ? (
+          <Chip 
+            label={client.code_client} 
+            size="small"
+            color="primary"
+            variant="outlined"
+            sx={{ fontWeight: 600 }}
+          />
+        ) : '-';
+      },
+    },
+    {
+      field: 'client',
+      headerName: 'Client',
+      flex: 1,
+      minWidth: 220,
+      renderCell: (params) => {
+        const client = params.row?.client;
+        return client ? (
+          <Box sx={{ py: 0.5 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+              {client.prenom} {client.nom}
+            </Typography>
+            {client.telephone ? (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Phone sx={{ fontSize: 14, color: 'text.secondary' }} />
+                <Typography variant="caption" color="text.secondary">
+                  {client.telephone}
+                </Typography>
+              </Box>
+            ) : (
+              <Typography variant="caption" color="text.disabled" fontStyle="italic">
+                Pas de téléphone
+              </Typography>
+            )}
+          </Box>
+        ) : 'N/A';
+      },
     },
     {
       field: 'numero_passage',
       headerName: 'N° Passage',
-      width: 120,
+      width: 130,
       headerAlign: 'center',
       align: 'center',
       renderCell: (params) => (
@@ -623,39 +814,18 @@ const Passages = () => {
       ),
     },
     {
-      field: 'client',
-      headerName: 'Client',
-      flex: 1,
-      minWidth: 200,
-      renderCell: (params) => {
-        const client = params.row?.client;
-        return client ? (
-          <Box>
-            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-              {client.prenom} {client.nom}
-            </Typography>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-              <Phone sx={{ fontSize: 12, color: 'text.secondary' }} />
-              <Typography variant="caption" color="text.secondary">
-                {client.telephone}
-              </Typography>
-            </Box>
-          </Box>
-        ) : 'N/A';
-      },
-    },
-    {
       field: 'date_passage',
       headerName: 'Date',
-      width: 150,
+      width: 140,
+      headerAlign: 'center',
+      align: 'center',
       renderCell: (params) => 
         params.value ? format(new Date(params.value), 'dd MMM yyyy', { locale: fr }) : '-',
     },
-    
     {
       field: 'est_gratuit',
       headerName: 'Type',
-      width: 100,
+      width: 120,
       headerAlign: 'center',
       align: 'center',
       renderCell: (params) => (
@@ -680,20 +850,18 @@ const Passages = () => {
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 120,
+      width: 100,
       sortable: false,
       headerAlign: 'center',
       align: 'center',
       renderCell: (params) => (
-        <Box>
-          <IconButton 
-            size="small" 
-            onClick={() => handleDelete(params.row.id)} 
-            color="error"
-          >
-            <Delete fontSize="small" />
-          </IconButton>
-        </Box>
+        <IconButton 
+          size="small" 
+          onClick={() => handleDelete(params.row.id)} 
+          color="error"
+        >
+          <Delete fontSize="small" />
+        </IconButton>
       ),
     },
   ], [handleDelete]);
@@ -717,7 +885,7 @@ const Passages = () => {
         </Typography>
       </Box>
 
-      {error && !openDialog && !showPaymentDialog && (
+      {error && !openDialog && (
         <Fade in={true}>
           <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
             {error}
@@ -732,7 +900,7 @@ const Passages = () => {
             <Grid item xs={12} md={8}>
               <TextField
                 fullWidth
-                placeholder="Rechercher un client par nom complet (ex: 'Jean Dupont'), prénom, nom ou téléphone..."
+                placeholder="Rechercher un client par nom, prénom, téléphone ou code client..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 InputProps={{
@@ -806,15 +974,28 @@ const Passages = () => {
               pageSizeOptions={[10, 25, 50]}
               disableSelectionOnClick
               disableRowSelectionOnClick
+              getRowHeight={() => 'auto'}
               sx={{
                 border: 'none',
+                '& .MuiDataGrid-cell': {
+                  py: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                },
                 '& .MuiDataGrid-cell:focus': {
                   outline: 'none',
+                },
+                '& .MuiDataGrid-row': {
+                  minHeight: '60px !important',
                 },
                 '& .MuiDataGrid-row:hover': {
                   backgroundColor: 'action.hover',
                 },
                 '& .MuiDataGrid-columnHeaders': {
+                  backgroundColor: 'grey.50',
+                  minHeight: '56px !important',
+                },
+                '& .MuiDataGrid-columnHeader': {
                   backgroundColor: 'grey.50',
                 },
               }}
@@ -823,7 +1004,7 @@ const Passages = () => {
         </Paper>
       </Grow>
 
-      {/* Dialogue de création de nouveau client */}
+      {/* Dialogue de création de nouveau client - SANS CODE CLIENT */}
       <Dialog 
         open={showNewClientForm} 
         onClose={() => setShowNewClientForm(false)} 
@@ -849,15 +1030,6 @@ const Passages = () => {
             <Grid item xs={12}>
               <TextField
                 fullWidth
-                label="Nom"
-                value={newClientData.nom}
-                onChange={(e) => setNewClientData({ ...newClientData, nom: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
                 label="Prénom"
                 value={newClientData.prenom}
                 onChange={(e) => setNewClientData({ ...newClientData, prenom: e.target.value })}
@@ -867,10 +1039,20 @@ const Passages = () => {
             <Grid item xs={12}>
               <TextField
                 fullWidth
-                label="Téléphone"
+                label="Nom"
+                value={newClientData.nom}
+                onChange={(e) => setNewClientData({ ...newClientData, nom: e.target.value })}
+                required
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Téléphone (optionnel)"
                 value={newClientData.telephone}
                 onChange={(e) => setNewClientData({ ...newClientData, telephone: e.target.value })}
-                required
+                placeholder="Ex: +225 01 02 03 04 05"
+                helperText="Le numéro de téléphone est optionnel"
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -902,7 +1084,7 @@ const Passages = () => {
       <Dialog 
         open={openDialog} 
         onClose={handleCloseDialog} 
-        maxWidth="md" 
+        maxWidth="lg" 
         fullWidth
         TransitionComponent={Zoom}
       >
@@ -922,109 +1104,317 @@ const Passages = () => {
           )}
 
           {selectedClient && (
-            <Grow in={true}>
-              <Card sx={{ bgcolor: 'primary.lighter', mb: 3 }}>
-                <CardContent>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Box>
-                      <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                        {selectedClient.prenom} {selectedClient.nom}
+  <Grow in={true}>
+    <Card sx={{ 
+      bgcolor: alpha('#1976d2', 0.06), 
+      mb: 2,
+      border: '1px solid',
+      borderColor: 'primary.light',
+      borderRadius: 1.5,
+      py: 0.5,
+      px: 1.5,
+    }}>
+      <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
+        <Box sx={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          flexWrap: 'nowrap', 
+          gap: 1.5 
+        }}>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Avatar
+              sx={{
+                width: 48,
+                height: 48,
+                bgcolor: 'primary.main',
+                color: 'white',
+                fontWeight: 600,
+                fontSize: '1.1rem',
+              }}
+            >
+              {selectedClient.prenom?.charAt(0)}{selectedClient.nom?.charAt(0)}
+            </Avatar>
+            <Box>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.3 }}>
+                {selectedClient.prenom} {selectedClient.nom}
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.25 }}>
+                {selectedClient.code_client && (
+                  <Chip 
+                    label={selectedClient.code_client} 
+                    size="small"
+                    sx={{ 
+                      fontSize: '0.75rem',
+                      height: 20,
+                      fontWeight: 500,
+                      bgcolor: 'white',
+                      border: '1px solid',
+                      borderColor: 'primary.light',
+                    }}
+                  />
+                )}
+                {selectedClient.telephone ? (
+                  <Stack direction="row" alignItems="center" spacing={0.5}>
+                    <Phone fontSize="small" sx={{ fontSize: 14, color: 'text.secondary' }} />
+                    <Typography variant="caption" color="text.secondary">
+                      {selectedClient.telephone}
+                    </Typography>
+                  </Stack>
+                ) : (
+                  <Typography variant="caption" color="text.disabled" fontStyle="italic">
+                    Pas de téléphone
+                  </Typography>
+                )}
+              </Box>
+            </Box>
+          </Stack>
+          {fidelityInfo && fidelityInfo.est_gratuit && (
+            <Zoom in={true} timeout={500}>
+              <Chip 
+                icon={<CardGiftcard fontSize="small" />}
+                label="GRATUIT" 
+                color="success"
+                size="small"
+                sx={{ 
+                  fontWeight: 700, 
+                  height: 28, 
+                  fontSize: '0.8rem',
+                  '& .MuiChip-icon': { fontSize: 16 }
+                }}
+              />
+            </Zoom>
+          )}
+        </Box>
+      </CardContent>
+    </Card>
+  </Grow>
+)}
+
+          {/* LAYOUT : Prestations et Résumé côte à côte */}
+          <Box sx={{ display: 'flex', gap: 3, flexWrap: { xs: 'wrap', md: 'nowrap' } }}>
+            {/* Colonne gauche : Liste des prestations */}
+            <Box sx={{ flex: { xs: '1 1 100%', md: '1 1 58%' }, minWidth: 0 }}>
+              <Typography variant="h6" sx={{ mb: 2 }}>
+                Prestations disponibles
+              </Typography>
+
+              <TableContainer sx={{ maxHeight: 500, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+                <Table stickyHeader size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell padding="checkbox"></TableCell>
+                      <TableCell>Prestation</TableCell>
+                      <TableCell align="center" sx={{ width: 150 }}>Quantité</TableCell>
+                      <TableCell align="right">Prix unit.</TableCell>
+                      <TableCell align="right">Total</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {prestations.map((prestation) => (
+                      <PrestationRow
+                        key={prestation.id}
+                        prestation={prestation}
+                        selected={isPrestationSelected(prestation.id)}
+                        selectedPrestation={getSelectedPrestation(prestation.id)}
+                        onToggle={handleTogglePrestation}
+                        onQuantityChange={handleQuantityChange}
+                      />
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Box>
+
+            {/* Colonne droite : Résumé de la commande */}
+            <Box sx={{ 
+              flex: { xs: '1 1 100%', md: '0 0 38%' }, 
+              minWidth: 0,
+              maxWidth: { md: '420px' }
+            }}>
+              <Paper elevation={3} sx={{ p: 3, bgcolor: 'grey.50', height: 'fit-content' }}>
+                <Typography variant="h6" sx={{ mb: 2, fontWeight: 700 }}>
+                  Résumé de la commande
+                </Typography>
+                
+                {selectedPrestations.length === 0 ? (
+                  <Alert severity="info">
+                    Aucune prestation sélectionnée
+                  </Alert>
+                ) : (
+                  <Box>
+                    {/* Liste des prestations sélectionnées */}
+                    <Box sx={{ mb: 2, maxHeight: 200, overflowY: 'auto', pr: 1 }}>
+                      {selectedPrestations.map((p) => (
+                        <Fade key={p.id} in={true}>
+                          <Box sx={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            mb: 1,
+                            pb: 1,
+                            borderBottom: '1px solid',
+                            borderColor: 'divider'
+                          }}>
+                            <Box sx={{ flex: 1, minWidth: 0, mr: 1 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                                {p.libelle}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {p.quantite} x {p.prix} FCFA
+                              </Typography>
+                            </Box>
+                            <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main', flexShrink: 0 }}>
+                              {p.prix * p.quantite} FCFA
+                            </Typography>
+                          </Box>
+                        </Fade>
+                      ))}
+                    </Box>
+
+                    <Divider sx={{ my: 2 }} />
+
+                    {/* Sous-total */}
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                      <Typography variant="body1">Sous-total</Typography>
+                      <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                        {calculateSubtotal} FCFA
                       </Typography>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-                        <Phone fontSize="small" color="action" />
-                        <Typography variant="body2" color="text.secondary">
-                          {selectedClient.telephone}
+                    </Box>
+
+                    {/* Section Remise */}
+                    {!fidelityInfo?.est_gratuit && (
+                      <Box sx={{ mb: 2, p: 2, bgcolor: 'warning.lighter', borderRadius: 1 }}>
+                        <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
+                          <PercentOutlined sx={{ fontSize: 18, mr: 0.5, verticalAlign: 'middle' }} />
+                          Remise
+                        </Typography>
+                        
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <FormControl fullWidth size="small">
+                            <InputLabel>Type de remise</InputLabel>
+                            <Select
+                              value={remiseType}
+                              onChange={(e) => {
+                                setRemiseType(e.target.value);
+                                setRemiseValue('');
+                              }}
+                              label="Type de remise"
+                            >
+                              <MenuItem value="aucune">Aucune remise</MenuItem>
+                              <MenuItem value="pourcentage">Pourcentage (%)</MenuItem>
+                              <MenuItem value="montant">Montant fixe (FCFA)</MenuItem>
+                            </Select>
+                          </FormControl>
+
+                          {remiseType !== 'aucune' && (
+                            <TextField
+                              fullWidth
+                              size="small"
+                              label={remiseType === 'pourcentage' ? 'Pourcentage' : 'Montant'}
+                              type="number"
+                              value={remiseValue}
+                              onChange={(e) => setRemiseValue(e.target.value)}
+                              placeholder={remiseType === 'pourcentage' ? '0-100' : '0'}
+                              InputProps={{
+                                endAdornment: (
+                                  <InputAdornment position="end">
+                                    {remiseType === 'pourcentage' ? '%' : 'FCFA'}
+                                  </InputAdornment>
+                                ),
+                              }}
+                            />
+                          )}
+                        </Box>
+
+                        {/* Affichage de la remise appliquée */}
+                        {remiseType !== 'aucune' && calculateRemise > 0 && (
+                          <Box sx={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            mt: 2,
+                            pt: 2,
+                            borderTop: '1px solid',
+                            borderColor: 'warning.main'
+                          }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600, color: 'error.main' }}>
+                              Remise appliquée
+                            </Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main' }}>
+                              - {calculateRemise} FCFA
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    )}
+
+                    {/* Affichage du montant après remise */}
+                    {remiseType !== 'aucune' && calculateRemise > 0 && !fidelityInfo?.est_gratuit && (
+                      <Box sx={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        mb: 2,
+                        p: 1.5,
+                        bgcolor: 'success.lighter',
+                        borderRadius: 1
+                      }}>
+                        <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                          Montant après remise
+                        </Typography>
+                        <Typography variant="body1" sx={{ fontWeight: 700, color: 'success.main' }}>
+                          {calculateTotal} FCFA
                         </Typography>
                       </Box>
-                    </Box>
-                    {fidelityInfo && fidelityInfo.est_gratuit && (
-                      <Zoom in={true} timeout={500}>
-                        <Chip 
-                          icon={<CardGiftcard />}
-                          label="PASSAGE GRATUIT" 
-                          color="success"
-                          sx={{ fontWeight: 600 }}
-                        />
-                      </Zoom>
+                    )}
+
+                    <Divider sx={{ my: 2 }} />
+
+                    {/* Mode de paiement */}
+                    {!fidelityInfo?.est_gratuit && (
+                      <Box sx={{ mt: 2 }}>
+                        <FormControl fullWidth>
+                          <InputLabel>Mode de paiement</InputLabel>
+                          <Select
+                            value={modePaiement}
+                            onChange={(e) => setModePaiement(e.target.value)}
+                            label="Mode de paiement"
+                            startAdornment={
+                              <InputAdornment position="start">
+                                {paymentIcons[modePaiement]}
+                              </InputAdornment>
+                            }
+                          >
+                            <MenuItem value="especes">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <AttachMoney />
+                                Espèces
+                              </Box>
+                            </MenuItem>
+                            <MenuItem value="mobile_money">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <PhoneAndroid />
+                                Mobile Money
+                              </Box>
+                            </MenuItem>
+                            <MenuItem value="carte">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <CreditCard />
+                                Carte bancaire
+                              </Box>
+                            </MenuItem>
+                            <MenuItem value="autre">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Description />
+                                Autre
+                              </Box>
+                            </MenuItem>
+                          </Select>
+                        </FormControl>
+                      </Box>
                     )}
                   </Box>
-                </CardContent>
-              </Card>
-            </Grow>
-          )}
-
-          <Typography variant="h6" sx={{ mb: 2 }}>
-            Prestations disponibles
-          </Typography>
-
-          <TableContainer sx={{ maxHeight: 400, mb: 2 }}>
-            <Table stickyHeader size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell padding="checkbox"></TableCell>
-                  <TableCell>Prestation</TableCell>
-                  <TableCell align="right">Prix</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {prestations.map((prestation) => (
-                  <PrestationRow
-                    key={prestation.id}
-                    prestation={prestation}
-                    selected={isPrestationSelected(prestation.id)}
-                    onToggle={handleTogglePrestation}
-                  />
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-
-          <Divider sx={{ my: 2 }} />
-
-          <Box sx={{ bgcolor: 'grey.50', p: 2, borderRadius: 1 }}>
-            <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-              Résumé de la commande
-            </Typography>
-            
-            {selectedPrestations.length === 0 ? (
-              <Typography variant="body2" color="text.secondary">
-                Aucune prestation sélectionnée
-              </Typography>
-            ) : (
-              <Box>
-                {selectedPrestations.map((p) => (
-                  <Fade key={p.id} in={true}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
-                      <Typography variant="body2">{p.libelle}</Typography>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {p.prix} FCFA
-                      </Typography>
-                    </Box>
-                  </Fade>
-                ))}
-                
-                <Divider sx={{ my: 1 }} />
-                
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                    TOTAL
-                  </Typography>
-                  <Typography 
-                    variant="h6" 
-                    sx={{ 
-                      fontWeight: 700, 
-                      color: fidelityInfo?.est_gratuit ? 'success.main' : 'primary.main' 
-                    }}
-                  >
-                    {fidelityInfo?.est_gratuit ? (
-                      <Chip label="GRATUIT" color="success" />
-                    ) : (
-                      `${calculateTotal} FCFA`
-                    )}
-                  </Typography>
-                </Box>
-              </Box>
-            )}
+                )}
+              </Paper>
+            </Box>
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -1032,89 +1422,13 @@ const Passages = () => {
             Annuler
           </Button>
           <Button 
-            onClick={handleCreatePassage} 
+            onClick={handleCreatePassageAndPayment} 
             variant="contained"
             disabled={selectedPrestations.length === 0 || creatingPassage}
             size="large"
-            startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <ShoppingCart />}
-          >
-            {creatingPassage ? 'Création...' : 'Valider le passage'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Dialogue de paiement */}
-      <Dialog 
-        open={showPaymentDialog} 
-        onClose={() => setShowPaymentDialog(false)} 
-        maxWidth="sm" 
-        fullWidth
-        TransitionComponent={Zoom}
-      >
-        <DialogTitle>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Payment />
-            Enregistrer le paiement
-          </Box>
-        </DialogTitle>
-        <DialogContent>
-          <Fade in={true}>
-            <Alert severity="info" sx={{ mb: 2 }}>
-              Veuillez enregistrer le paiement avant de procéder au téléchargement du reçu.
-            </Alert>
-          </Fade>
-          
-          <Grid container spacing={2} sx={{ mt: 0.5 }}>
-            <Grid item xs={12}>
-              <Grow in={true}>
-                <Card sx={{ bgcolor: 'primary.lighter' }}>
-                  <CardContent>
-                    <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
-                      Montant à payer
-                    </Typography>
-                    <Typography variant="h4" sx={{ fontWeight: 700, color: 'primary.main' }}>
-                      {paymentData.montant_paye} FCFA
-                    </Typography>
-                  </CardContent>
-                </Card>
-              </Grow>
-            </Grid>
-
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                select
-                label="Mode de paiement"
-                value={paymentData.mode_paiement}
-                onChange={(e) => setPaymentData({ ...paymentData, mode_paiement: e.target.value })}
-                SelectProps={{ native: true }}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      {paymentIcons[paymentData.mode_paiement]}
-                    </InputAdornment>
-                  ),
-                }}
-              >
-                <option value="especes">Espèces</option>
-                <option value="mobile_money">Mobile Money</option>
-                <option value="carte">Carte bancaire</option>
-                <option value="autre">Autre</option>
-              </TextField>
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={() => setShowPaymentDialog(false)} size="large">
-            Annuler
-          </Button>
-          <Button 
-            onClick={handleCreatePayment} 
-            variant="contained"
-            size="large"
-            disabled={creatingPayment}
-            startIcon={creatingPayment ? <CircularProgress size={20} color="inherit" /> : <CheckCircle />}
-            sx={{ 
+            startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <Receipt />}
+            sx={{
+              minWidth: 250,
               position: 'relative',
               overflow: 'hidden',
               transition: 'all 0.3s ease',
@@ -1122,12 +1436,164 @@ const Passages = () => {
                 transform: 'translateY(-2px)',
                 boxShadow: 4,
               },
-              '&:active': {
-                transform: 'translateY(0)',
-              }
             }}
           >
-            {creatingPayment ? 'Traitement en cours...' : 'Confirmer et télécharger le reçu'}
+            {creatingPassage 
+              ? 'Traitement en cours...' 
+              : fidelityInfo?.est_gratuit 
+                ? 'Valider le passage gratuit'
+                : 'Confirmer et générer le reçu'
+            }
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialogue de félicitations pour passage gratuit */}
+      <Dialog 
+        open={showCongratulationsDialog} 
+        onClose={() => {}} 
+        maxWidth="sm" 
+        fullWidth
+        TransitionComponent={Zoom}
+        PaperProps={{
+          sx: {
+            background: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)',
+            color: 'white',
+            overflow: 'visible',
+            borderRadius: 3,
+          }
+        }}
+      >
+        <DialogContent sx={{ textAlign: 'center', py: 6, position: 'relative' }}>
+          {/* Icône principale */}
+          <Box
+            sx={{
+              position: 'absolute',
+              top: -40,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              bgcolor: 'white',
+              borderRadius: '50%',
+              width: 80,
+              height: 80,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2)',
+              animation: 'pulse 2s ease-in-out infinite',
+            }}
+          >
+            <CheckCircle sx={{ fontSize: 50, color: '#11998e' }} />
+          </Box>
+
+          <Zoom in={showCongratulationsDialog} timeout={600} style={{ transitionDelay: '200ms' }}>
+            <Box sx={{ mt: 4 }}>
+              <Typography variant="h4" sx={{ fontWeight: 700, mb: 2, textShadow: '2px 2px 4px rgba(0,0,0,0.2)' }}>
+                Félicitations
+              </Typography>
+            </Box>
+          </Zoom>
+
+          <Fade in={showCongratulationsDialog} timeout={800} style={{ transitionDelay: '400ms' }}>
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="h5" sx={{ fontWeight: 600, mb: 1 }}>
+                {selectedClient?.prenom} {selectedClient?.nom}
+              </Typography>
+              {selectedClient?.code_client && (
+                <Chip 
+                  label={selectedClient.code_client}
+                  sx={{ 
+                    bgcolor: 'white',
+                    color: '#11998e',
+                    fontWeight: 600,
+                    mb: 1,
+                  }}
+                />
+              )}
+              <Divider sx={{ bgcolor: 'rgba(255, 255, 255, 0.3)', my: 2, mx: 'auto', width: '60%' }} />
+            </Box>
+          </Fade>
+
+          <Fade in={showCongratulationsDialog} timeout={800} style={{ transitionDelay: '600ms' }}>
+            <Box sx={{ 
+              bgcolor: 'rgba(255, 255, 255, 0.15)', 
+              borderRadius: 2, 
+              p: 3, 
+              mb: 3,
+              backdropFilter: 'blur(10px)',
+              border: '1px solid rgba(255, 255, 255, 0.2)',
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 2 }}>
+                <CardGiftcard sx={{ fontSize: 32, color: 'white' }} />
+                <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                  Passage Gratuit
+                </Typography>
+              </Box>
+              <Typography variant="body1" sx={{ mb: 2, lineHeight: 1.6 }}>
+                Votre fidélité est récompensée aujourd'hui
+              </Typography>
+              <Typography variant="h6" sx={{ fontWeight: 700, color: 'white', letterSpacing: 1 }}>
+                Ce passage ne vous sera pas facturé
+              </Typography>
+            </Box>
+          </Fade>
+
+          <Fade in={showCongratulationsDialog} timeout={800} style={{ transitionDelay: '800ms' }}>
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              gap: 1,
+              bgcolor: 'rgba(255, 255, 255, 0.1)',
+              borderRadius: 2,
+              p: 2,
+            }}>
+              <Loyalty sx={{ fontSize: 24 }} />
+              <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                Merci pour votre confiance continue
+              </Typography>
+            </Box>
+          </Fade>
+
+          <style>
+            {`
+              @keyframes pulse {
+                0%, 100% { 
+                  transform: translateX(-50%) scale(1);
+                  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+                }
+                50% { 
+                  transform: translateX(-50%) scale(1.05);
+                  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+                }
+              }
+            `}
+          </style>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3, pt: 0, justifyContent: 'center' }}>
+          <Button 
+            onClick={handleCongratulationsConfirm} 
+            variant="contained"
+            size="large"
+            sx={{
+              bgcolor: 'white',
+              color: '#11998e',
+              fontWeight: 700,
+              px: 6,
+              py: 1.5,
+              fontSize: '1rem',
+              borderRadius: 2,
+              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+              '&:hover': {
+                bgcolor: '#f8f8f8',
+                transform: 'translateY(-2px)',
+                boxShadow: '0 6px 16px rgba(0, 0, 0, 0.2)',
+              },
+              transition: 'all 0.3s ease',
+            }}
+            startIcon={<ArrowForward />}
+          >
+            Continuer
           </Button>
         </DialogActions>
       </Dialog>

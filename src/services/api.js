@@ -45,8 +45,8 @@ export const authAPI = {
   changePassword: (data) => api.post('/auth/change-password', data),
 };
 
-// Clients
 export const clientsAPI = {
+  generateCode: () => api.get('/clients/generate-code'),
   getAll: (params) => api.get('/clients', { params }),
   getOne: (id) => api.get(`/clients/${id}`),
   create: (data) => api.post('/clients', data),
@@ -55,6 +55,7 @@ export const clientsAPI = {
   searchByPhone: (phone) => api.get(`/clients/search/${phone}`),
   getHistory: (id, params) => api.get(`/clients/${id}/historique`, { params }),
 };
+
 
 // Prestations
 export const prestationsAPI = {
@@ -77,6 +78,8 @@ export const passagesAPI = {
   getByClient: (clientId) => api.get(`/passages/client/${clientId}`),
   checkFidelity: (clientId) => api.get(`/passages/client/${clientId}/check-fidelite`),
 };
+
+
 
 // Paiements
 export const paiementsAPI = {
