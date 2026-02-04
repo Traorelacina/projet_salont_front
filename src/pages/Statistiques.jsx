@@ -25,6 +25,7 @@ import {
   Tooltip,
   useTheme,
   alpha,
+  Snackbar,
 } from '@mui/material';
 import {
   TrendingUp,
@@ -44,11 +45,13 @@ import {
   Star,
   EmojiEvents,
   PersonAdd,
+  WorkOutline,
 } from '@mui/icons-material';
-import { statsAPI } from '../services/api';
+import { statsAPI, usersAPI } from '../services/api';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
+import * as XLSX from 'xlsx';
 
 // Carte de statistique améliorée avec animation
 const StatCard = ({ title, value, subtitle, icon, color, trend, delay = 0 }) => {
@@ -135,49 +138,118 @@ const StatCard = ({ title, value, subtitle, icon, color, trend, delay = 0 }) => 
 };
 
 // Tableau amélioré avec animations
-const AnimatedTable = ({ children, title, subtitle }) => {
+const AnimatedTable = ({ children, title, subtitle, exportable, exportData, exportTitle }) => {
   const theme = useTheme();
-  
+  const [loading, setLoading] = useState(false);
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+
+  const handleExport = async () => {
+    if (!exportData) {
+      setSnackbar({
+        open: true,
+        message: 'Aucune donnée à exporter',
+        severity: 'warning'
+      });
+      return;
+    }
+
+    setLoading(true);
+    
+    try {
+      exportToExcel(exportData, exportTitle || title);
+      setSnackbar({
+        open: true,
+        message: 'Export Excel terminé avec succès',
+        severity: 'success'
+      });
+    } catch (error) {
+      console.error('Erreur lors de l\'export:', error);
+      setSnackbar({
+        open: true,
+        message: 'Erreur lors de l\'exportation',
+        severity: 'error'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportToExcel = (data, fileName) => {
+    // Convertir les données en format Excel
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Rapport');
+    
+    // Générer le fichier Excel
+    XLSX.writeFile(wb, `${fileName}_${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
+  };
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
-    >
-      <Card 
-        sx={{ 
-          height: '100%',
-          background: `linear-gradient(135deg, ${alpha(theme.palette.background.paper, 1)} 0%, ${alpha(theme.palette.primary.main, 0.02)} 100%)`,
-          border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
-        }}
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
       >
-        <CardContent>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Box 
-                sx={{ 
-                  width: 4, 
-                  height: 32, 
-                  bgcolor: 'primary.main',
-                  borderRadius: 2,
-                }} 
-              />
-              <Box>
-                <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                  {title}
-                </Typography>
-                {subtitle && (
-                  <Typography variant="caption" color="text.secondary">
-                    {subtitle}
+        <Card 
+          sx={{ 
+            height: '100%',
+            background: `linear-gradient(135deg, ${alpha(theme.palette.background.paper, 1)} 0%, ${alpha(theme.palette.primary.main, 0.02)} 100%)`,
+            border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
+          }}
+        >
+          <CardContent>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box 
+                  sx={{ 
+                    width: 4, 
+                    height: 32, 
+                    bgcolor: 'primary.main',
+                    borderRadius: 2,
+                  }} 
+                />
+                <Box>
+                  <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                    {title}
                   </Typography>
-                )}
+                  {subtitle && (
+                    <Typography variant="caption" color="text.secondary">
+                      {subtitle}
+                    </Typography>
+                  )}
+                </Box>
               </Box>
+              
+              {exportable && (
+                <Tooltip title="Exporter en Excel">
+                  <IconButton
+                    onClick={handleExport}
+                    disabled={loading}
+                    sx={{
+                      bgcolor: alpha(theme.palette.primary.main, 0.1),
+                      '&:hover': {
+                        bgcolor: alpha(theme.palette.primary.main, 0.2),
+                      },
+                    }}
+                  >
+                    {loading ? <CircularProgress size={24} /> : <FileDownload />}
+                  </IconButton>
+                </Tooltip>
+              )}
             </Box>
-          </Box>
-          {children}
-        </CardContent>
-      </Card>
-    </motion.div>
+            {children}
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={3000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        message={snackbar.message}
+      />
+    </>
   );
 };
 
@@ -186,12 +258,14 @@ const Statistiques = () => {
   const [tabValue, setTabValue] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [exportLoading, setExportLoading] = useState(false);
   
   // État pour les différents rapports
   const [rapportJournalier, setRapportJournalier] = useState(null);
   const [rapportPeriode, setRapportPeriode] = useState(null);
   const [rapportPrestations, setRapportPrestations] = useState(null);
   const [rapportFidelite, setRapportFidelite] = useState(null);
+  const [rapportCoiffeurs, setRapportCoiffeurs] = useState(null);
 
   // Dates pour les filtres
   const [dateJournaliere, setDateJournaliere] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -274,6 +348,26 @@ const Statistiques = () => {
     }
   };
 
+  const loadRapportCoiffeurs = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await statsAPI.coiffeurs({
+        date_debut: dateDebut,
+        date_fin: dateFin
+      });
+      
+      if (response.data.success) {
+        setRapportCoiffeurs(response.data.data);
+      }
+    } catch (error) {
+      console.error('Error loading barbers stats:', error);
+      setError('Erreur lors du chargement des statistiques des coiffeurs');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleTabChange = (event, newValue) => {
     setTabValue(newValue);
     setError('');
@@ -291,6 +385,9 @@ const Statistiques = () => {
       case 3:
         if (!rapportFidelite) loadRapportFidelite();
         break;
+      case 4:
+        if (!rapportCoiffeurs) loadRapportCoiffeurs();
+        break;
       default:
         break;
     }
@@ -301,6 +398,131 @@ const Statistiques = () => {
       minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     }).format(amount || 0);
+  };
+
+  // Fonction d'exportation globale
+  const handleExportGlobal = async () => {
+    setExportLoading(true);
+    try {
+      let data = [];
+      let title = '';
+      
+      switch (tabValue) {
+        case 0: // Journalier
+          if (rapportJournalier) {
+            data = [
+              { 'Statistique': 'Clients du jour', 'Valeur': rapportJournalier.resume?.nombre_clients || 0 },
+              { 'Statistique': 'Chiffre d\'affaires', 'Valeur': `${formatCurrency(rapportJournalier.resume?.chiffre_affaires)} FCFA` },
+              { 'Statistique': 'Passages gratuits', 'Valeur': rapportJournalier.resume?.nombre_passages_gratuits || 0 },
+              { 'Statistique': 'CA Théorique', 'Valeur': `${formatCurrency(rapportJournalier.resume?.chiffre_affaires_theorique)} FCFA` },
+              ...(rapportJournalier.repartition_prestations || []).map(item => ({
+                'Prestation': item.libelle,
+                'Nombre': item.nombre,
+                'Montant': `${formatCurrency(item.montant)} FCFA`
+              })),
+              ...(rapportJournalier.repartition_paiements || []).map(item => ({
+                'Mode de paiement': item.mode_paiement?.replace('_', ' '),
+                'Montant': `${formatCurrency(item.total)} FCFA`
+              }))
+            ];
+            title = `Rapport_Journalier_${dateJournaliere}`;
+          }
+          break;
+          
+        case 1: // Période
+          if (rapportPeriode) {
+            data = [
+              { 'Statistique': 'Clients uniques', 'Valeur': rapportPeriode.resume?.nombre_clients_uniques || 0 },
+              { 'Statistique': 'Total passages', 'Valeur': rapportPeriode.resume?.total_passages || 0 },
+              { 'Statistique': 'CA Total', 'Valeur': `${formatCurrency(rapportPeriode.resume?.chiffre_affaires_total)} FCFA` },
+              ...(rapportPeriode.evolution_ca || []).map(item => ({
+                'Date': new Date(item.date).toLocaleDateString('fr-FR'),
+                'Nombre paiements': item.nombre_paiements,
+                'Montant': `${formatCurrency(item.montant)} FCFA`
+              })),
+              ...(rapportPeriode.top_clients || []).map((client, index) => ({
+                'Rang': index + 1,
+                'Client': client.nom_complet,
+                'Téléphone': client.telephone,
+                'Passages': client.nombre_passages,
+                'Chiffre d\'affaires': `${formatCurrency(client.chiffre_affaires)} FCFA`
+              }))
+            ];
+            title = `Rapport_Periode_${dateDebut}_${dateFin}`;
+          }
+          break;
+          
+        case 2: // Prestations
+          if (rapportPrestations) {
+            data = (rapportPrestations || []).map(prestation => ({
+              'Prestation': prestation.libelle,
+              'Prix actuel': `${formatCurrency(prestation.prix_actuel)} FCFA`,
+              'Utilisations': prestation.nombre_utilisations,
+              'Revenu total': `${formatCurrency(prestation.revenu_total)} FCFA`,
+              'Revenu moyen': `${formatCurrency(prestation.revenu_moyen)} FCFA`
+            }));
+            title = `Statistiques_Prestations_${dateDebut}_${dateFin}`;
+          }
+          break;
+          
+        case 3: // Fidélité
+          if (rapportFidelite) {
+            data = [
+              { 'Statistique': 'Total clients', 'Valeur': rapportFidelite.total_clients || 0 },
+              { 'Statistique': 'Nouveaux (30j)', 'Valeur': rapportFidelite.nouveaux_clients_30j || 0 },
+              { 'Statistique': 'Clients fidèles', 'Valeur': rapportFidelite.clients_fideles?.length || 0 },
+              ...(rapportFidelite.repartition_passages || []).map(item => ({
+                'Tranche': `${item.tranche} passages`,
+                'Nombre de clients': item.nombre_clients
+              })),
+              ...(rapportFidelite.clients_fideles || []).map((client, index) => ({
+                'Rang': index + 1,
+                'Client': client.nom_complet,
+                'Téléphone': client.telephone,
+                'Passages': client.nombre_passages,
+                'CA Total': `${formatCurrency(client.chiffre_affaires_total)} FCFA`,
+                'Dernière visite': client.derniere_visite || 'N/A'
+              }))
+            ];
+            const currentDate = new Date().toISOString().split('T')[0];
+            title = `Rapport_Fidelite_${currentDate}`;
+          }
+          break;
+          
+        case 4: // Coiffeurs
+          if (rapportCoiffeurs) {
+            data = (rapportCoiffeurs || []).map(coiffeur => ({
+              'Coiffeur': `${coiffeur.prenom} ${coiffeur.nom}`,
+              'Prestations réalisées': coiffeur.nombre_prestations,
+              'Clients uniques': coiffeur.nombre_clients_uniques,
+              'CA généré': `${formatCurrency(coiffeur.chiffre_affaires_genere)} FCFA`,
+              'CA moyen': `${formatCurrency(coiffeur.chiffre_affaires_moyen)} FCFA`
+            }));
+            title = `Statistiques_Coiffeurs_${dateDebut}_${dateFin}`;
+          }
+          break;
+      }
+      
+      if (data.length > 0) {
+        exportToExcel(data, title);
+      }
+      
+    } catch (error) {
+      console.error('Erreur lors de l\'export:', error);
+      setError('Erreur lors de l\'exportation des données');
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  const exportToExcel = (data, fileName) => {
+    // Convertir les données en format Excel
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Rapport');
+    
+    // Générer le fichier Excel
+    XLSX.writeFile(wb, `${fileName}.xlsx`);
   };
 
   // Onglet Rapport Journalier
@@ -320,31 +542,56 @@ const Statistiques = () => {
           display: 'flex', 
           gap: 2, 
           alignItems: 'center', 
-          flexWrap: 'wrap' 
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
         }}>
-          <CalendarToday sx={{ color: 'primary.main' }} />
-          <TextField
-            type="date"
-            label="Date"
-            value={dateJournaliere}
-            onChange={(e) => setDateJournaliere(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            sx={{ minWidth: 200 }}
-          />
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            <CalendarToday sx={{ color: 'primary.main' }} />
+            <TextField
+              type="date"
+              label="Date"
+              value={dateJournaliere}
+              onChange={(e) => setDateJournaliere(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 200 }}
+            />
+            <Button 
+              variant="contained" 
+              onClick={() => loadRapportJournalier(dateJournaliere)}
+              startIcon={<Assessment />}
+              sx={{
+                px: 3,
+                py: 1,
+                borderRadius: 2,
+                fontWeight: 600,
+                textTransform: 'none',
+                boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              }}
+            >
+              Générer le rapport
+            </Button>
+          </Box>
+          
           <Button 
-            variant="contained" 
-            onClick={() => loadRapportJournalier(dateJournaliere)}
-            startIcon={<Assessment />}
+            variant="outlined"
+            onClick={handleExportGlobal}
+            startIcon={<FileDownload />}
+            disabled={!rapportJournalier || exportLoading}
             sx={{
               px: 3,
               py: 1,
               borderRadius: 2,
               fontWeight: 600,
               textTransform: 'none',
-              boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              borderColor: 'primary.main',
+              color: 'primary.main',
+              '&:hover': {
+                borderColor: 'primary.dark',
+                bgcolor: alpha(theme.palette.primary.main, 0.05),
+              }
             }}
           >
-            Générer le rapport
+            {exportLoading ? <CircularProgress size={20} /> : 'Exporter en Excel'}
           </Button>
         </Box>
       </motion.div>
@@ -395,7 +642,16 @@ const Statistiques = () => {
 
           <Grid container spacing={3}>
             <Grid item xs={12} md={6}>
-              <AnimatedTable title="Répartition par prestation">
+              <AnimatedTable 
+                title="Répartition par prestation"
+                exportable
+                exportData={rapportJournalier.repartition_prestations?.map(item => ({
+                  'Prestation': item.libelle,
+                  'Nombre': item.nombre,
+                  'Montant': `${formatCurrency(item.montant)} FCFA`
+                }))}
+                exportTitle={`Repartition_Prestations_${dateJournaliere}`}
+              >
                 <TableContainer>
                   <Table size="small">
                     <TableHead>
@@ -456,7 +712,15 @@ const Statistiques = () => {
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <AnimatedTable title="Répartition par mode de paiement">
+              <AnimatedTable 
+                title="Répartition par mode de paiement"
+                exportable
+                exportData={rapportJournalier.repartition_paiements?.map(item => ({
+                  'Mode de paiement': item.mode_paiement?.replace('_', ' '),
+                  'Montant': `${formatCurrency(item.total)} FCFA`
+                }))}
+                exportTitle={`Repartition_Paiements_${dateJournaliere}`}
+              >
                 <TableContainer>
                   <Table size="small">
                     <TableHead>
@@ -540,39 +804,64 @@ const Statistiques = () => {
           display: 'flex', 
           gap: 2, 
           alignItems: 'center', 
-          flexWrap: 'wrap' 
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
         }}>
-          <CalendarToday sx={{ color: 'primary.main' }} />
-          <TextField
-            type="date"
-            label="Date début"
-            value={dateDebut}
-            onChange={(e) => setDateDebut(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            sx={{ minWidth: 180 }}
-          />
-          <TextField
-            type="date"
-            label="Date fin"
-            value={dateFin}
-            onChange={(e) => setDateFin(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            sx={{ minWidth: 180 }}
-          />
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            <CalendarToday sx={{ color: 'primary.main' }} />
+            <TextField
+              type="date"
+              label="Date début"
+              value={dateDebut}
+              onChange={(e) => setDateDebut(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 180 }}
+            />
+            <TextField
+              type="date"
+              label="Date fin"
+              value={dateFin}
+              onChange={(e) => setDateFin(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 180 }}
+            />
+            <Button 
+              variant="contained" 
+              onClick={loadRapportPeriode}
+              startIcon={<Assessment />}
+              sx={{
+                px: 3,
+                py: 1,
+                borderRadius: 2,
+                fontWeight: 600,
+                textTransform: 'none',
+                boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              }}
+            >
+              Générer le rapport
+            </Button>
+          </Box>
+          
           <Button 
-            variant="contained" 
-            onClick={loadRapportPeriode}
-            startIcon={<Assessment />}
+            variant="outlined"
+            onClick={handleExportGlobal}
+            startIcon={<FileDownload />}
+            disabled={!rapportPeriode || exportLoading}
             sx={{
               px: 3,
               py: 1,
               borderRadius: 2,
               fontWeight: 600,
               textTransform: 'none',
-              boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              borderColor: 'primary.main',
+              color: 'primary.main',
+              '&:hover': {
+                borderColor: 'primary.dark',
+                bgcolor: alpha(theme.palette.primary.main, 0.05),
+              }
             }}
           >
-            Générer le rapport
+            {exportLoading ? <CircularProgress size={20} /> : 'Exporter en Excel'}
           </Button>
         </Box>
       </motion.div>
@@ -623,7 +912,17 @@ const Statistiques = () => {
 
           <Grid container spacing={3}>
             <Grid item xs={12} md={6}>
-              <AnimatedTable title="Évolution du CA" subtitle="Par jour">
+              <AnimatedTable 
+                title="Évolution du CA" 
+                subtitle="Par jour"
+                exportable
+                exportData={rapportPeriode.evolution_ca?.map(item => ({
+                  'Date': format(new Date(item.date), 'dd/MM/yyyy', { locale: fr }),
+                  'Nombre paiements': item.nombre_paiements,
+                  'Montant': `${formatCurrency(item.montant)} FCFA`
+                }))}
+                exportTitle={`Evolution_CA_${dateDebut}_${dateFin}`}
+              >
                 <TableContainer sx={{ maxHeight: 400 }}>
                   <Table size="small" stickyHeader>
                     <TableHead>
@@ -673,7 +972,19 @@ const Statistiques = () => {
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <AnimatedTable title="Top 10 clients" subtitle="Meilleurs clients de la période">
+              <AnimatedTable 
+                title="Top 10 clients" 
+                subtitle="Meilleurs clients de la période"
+                exportable
+                exportData={rapportPeriode.top_clients?.map((client, index) => ({
+                  'Rang': index + 1,
+                  'Client': client.nom_complet,
+                  'Téléphone': client.telephone,
+                  'Passages': client.nombre_passages,
+                  'Chiffre d\'affaires': `${formatCurrency(client.chiffre_affaires)} FCFA`
+                }))}
+                exportTitle={`Top_Clients_${dateDebut}_${dateFin}`}
+              >
                 <TableContainer sx={{ maxHeight: 400 }}>
                   <Table size="small" stickyHeader>
                     <TableHead>
@@ -773,45 +1084,82 @@ const Statistiques = () => {
           display: 'flex', 
           gap: 2, 
           alignItems: 'center', 
-          flexWrap: 'wrap' 
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
         }}>
-          <CalendarToday sx={{ color: 'primary.main' }} />
-          <TextField
-            type="date"
-            label="Date début"
-            value={dateDebut}
-            onChange={(e) => setDateDebut(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            sx={{ minWidth: 180 }}
-          />
-          <TextField
-            type="date"
-            label="Date fin"
-            value={dateFin}
-            onChange={(e) => setDateFin(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-            sx={{ minWidth: 180 }}
-          />
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            <CalendarToday sx={{ color: 'primary.main' }} />
+            <TextField
+              type="date"
+              label="Date début"
+              value={dateDebut}
+              onChange={(e) => setDateDebut(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 180 }}
+            />
+            <TextField
+              type="date"
+              label="Date fin"
+              value={dateFin}
+              onChange={(e) => setDateFin(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 180 }}
+            />
+            <Button 
+              variant="contained" 
+              onClick={loadRapportPrestations}
+              startIcon={<Assessment />}
+              sx={{
+                px: 3,
+                py: 1,
+                borderRadius: 2,
+                fontWeight: 600,
+                textTransform: 'none',
+                boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              }}
+            >
+              Générer le rapport
+            </Button>
+          </Box>
+          
           <Button 
-            variant="contained" 
-            onClick={loadRapportPrestations}
-            startIcon={<Assessment />}
+            variant="outlined"
+            onClick={handleExportGlobal}
+            startIcon={<FileDownload />}
+            disabled={!rapportPrestations || exportLoading}
             sx={{
               px: 3,
               py: 1,
               borderRadius: 2,
               fontWeight: 600,
               textTransform: 'none',
-              boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              borderColor: 'primary.main',
+              color: 'primary.main',
+              '&:hover': {
+                borderColor: 'primary.dark',
+                bgcolor: alpha(theme.palette.primary.main, 0.05),
+              }
             }}
           >
-            Générer le rapport
+            {exportLoading ? <CircularProgress size={20} /> : 'Exporter en Excel'}
           </Button>
         </Box>
       </motion.div>
 
       {rapportPrestations && (
-        <AnimatedTable title="Statistiques des prestations" subtitle={`${rapportPrestations.length} prestations`}>
+        <AnimatedTable 
+          title="Statistiques des prestations" 
+          subtitle={`${rapportPrestations.length} prestations`}
+          exportable
+          exportData={rapportPrestations.map(prestation => ({
+            'Prestation': prestation.libelle,
+            'Prix actuel': `${formatCurrency(prestation.prix_actuel)} FCFA`,
+            'Utilisations': prestation.nombre_utilisations,
+            'Revenu total': `${formatCurrency(prestation.revenu_total)} FCFA`,
+            'Revenu moyen': `${formatCurrency(prestation.revenu_moyen)} FCFA`
+          }))}
+          exportTitle={`Statistiques_Prestations_${dateDebut}_${dateFin}`}
+        >
           <TableContainer>
             <Table>
               <TableHead>
@@ -908,7 +1256,13 @@ const Statistiques = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
       >
-        <Box sx={{ mb: 3 }}>
+        <Box sx={{ 
+          mb: 3, 
+          display: 'flex', 
+          gap: 2,
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
           <Button 
             variant="contained" 
             onClick={loadRapportFidelite}
@@ -923,6 +1277,28 @@ const Statistiques = () => {
             }}
           >
             Actualiser les données
+          </Button>
+          
+          <Button 
+            variant="outlined"
+            onClick={handleExportGlobal}
+            startIcon={<FileDownload />}
+            disabled={!rapportFidelite || exportLoading}
+            sx={{
+              px: 3,
+              py: 1.5,
+              borderRadius: 2,
+              fontWeight: 600,
+              textTransform: 'none',
+              borderColor: 'primary.main',
+              color: 'primary.main',
+              '&:hover': {
+                borderColor: 'primary.dark',
+                bgcolor: alpha(theme.palette.primary.main, 0.05),
+              }
+            }}
+          >
+            {exportLoading ? <CircularProgress size={20} /> : 'Exporter en Excel'}
           </Button>
         </Box>
       </motion.div>
@@ -972,7 +1348,15 @@ const Statistiques = () => {
 
           <Grid container spacing={3}>
             <Grid item xs={12} md={6}>
-              <AnimatedTable title="Répartition par nombre de passages">
+              <AnimatedTable 
+                title="Répartition par nombre de passages"
+                exportable
+                exportData={rapportFidelite.repartition_passages?.map(item => ({
+                  'Tranche': `${item.tranche} passages`,
+                  'Nombre de clients': item.nombre_clients
+                }))}
+                exportTitle={`Repartition_Passages_${format(new Date(), 'yyyy-MM-dd')}`}
+              >
                 <TableContainer>
                   <Table>
                     <TableHead>
@@ -1017,7 +1401,20 @@ const Statistiques = () => {
             </Grid>
 
             <Grid item xs={12} md={6}>
-              <AnimatedTable title="Top 20 clients fidèles" subtitle="Meilleurs clients par passages">
+              <AnimatedTable 
+                title="Top 20 clients fidèles" 
+                subtitle="Meilleurs clients par passages"
+                exportable
+                exportData={rapportFidelite.clients_fideles?.map((client, index) => ({
+                  'Rang': index + 1,
+                  'Client': client.nom_complet,
+                  'Téléphone': client.telephone,
+                  'Passages': client.nombre_passages,
+                  'CA Total': `${formatCurrency(client.chiffre_affaires_total)} FCFA`,
+                  'Dernière visite': client.derniere_visite
+                }))}
+                exportTitle={`Top_Fideles_${format(new Date(), 'yyyy-MM-dd')}`}
+              >
                 <TableContainer sx={{ maxHeight: 400 }}>
                   <Table size="small" stickyHeader>
                     <TableHead>
@@ -1093,6 +1490,253 @@ const Statistiques = () => {
               </AnimatedTable>
             </Grid>
           </Grid>
+        </>
+      )}
+    </Box>
+  );
+
+  // Onglet Coiffeurs
+  const renderRapportCoiffeurs = () => (
+    <Box>
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+      >
+        <Box sx={{ 
+          mb: 3, 
+          p: 2.5, 
+          borderRadius: 2,
+          background: `linear-gradient(135deg, ${alpha(theme.palette.grey[100], 0.5)} 0%, ${alpha(theme.palette.grey[50], 1)} 100%)`,
+          border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+          display: 'flex', 
+          gap: 2, 
+          alignItems: 'center', 
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+        }}>
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
+            <CalendarToday sx={{ color: 'primary.main' }} />
+            <TextField
+              type="date"
+              label="Date début"
+              value={dateDebut}
+              onChange={(e) => setDateDebut(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 180 }}
+            />
+            <TextField
+              type="date"
+              label="Date fin"
+              value={dateFin}
+              onChange={(e) => setDateFin(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ minWidth: 180 }}
+            />
+            <Button 
+              variant="contained" 
+              onClick={loadRapportCoiffeurs}
+              startIcon={<Assessment />}
+              sx={{
+                px: 3,
+                py: 1,
+                borderRadius: 2,
+                fontWeight: 600,
+                textTransform: 'none',
+                boxShadow: `0 4px 14px ${alpha(theme.palette.primary.main, 0.4)}`,
+              }}
+            >
+              Générer le rapport
+            </Button>
+          </Box>
+          
+          <Button 
+            variant="outlined"
+            onClick={handleExportGlobal}
+            startIcon={<FileDownload />}
+            disabled={!rapportCoiffeurs || exportLoading}
+            sx={{
+              px: 3,
+              py: 1,
+              borderRadius: 2,
+              fontWeight: 600,
+              textTransform: 'none',
+              borderColor: 'primary.main',
+              color: 'primary.main',
+              '&:hover': {
+                borderColor: 'primary.dark',
+                bgcolor: alpha(theme.palette.primary.main, 0.05),
+              }
+            }}
+          >
+            {exportLoading ? <CircularProgress size={20} /> : 'Exporter en Excel'}
+          </Button>
+        </Box>
+      </motion.div>
+
+      {rapportCoiffeurs && (
+        <>
+          <Grid container spacing={3} sx={{ mb: 3 }}>
+            <Grid item xs={12} sm={6} md={3}>
+              <StatCard
+                title="Coiffeurs actifs"
+                value={rapportCoiffeurs.filter(c => c.nombre_prestations > 0).length}
+                icon={<WorkOutline />}
+                color="primary"
+                subtitle="Sur la période"
+                delay={0}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <StatCard
+                title="Total prestations"
+                value={rapportCoiffeurs.reduce((sum, c) => sum + c.nombre_prestations, 0)}
+                icon={<ContentCut />}
+                color="info"
+                subtitle="Toutes prestations"
+                delay={0.1}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <StatCard
+                title="CA Total"
+                value={`${formatCurrency(rapportCoiffeurs.reduce((sum, c) => sum + c.chiffre_affaires_genere, 0))}`}
+                icon={<AttachMoney />}
+                color="success"
+                subtitle="FCFA"
+                delay={0.2}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <StatCard
+                title="Moyenne/coiffeur"
+                value={`${formatCurrency(rapportCoiffeurs.reduce((sum, c) => sum + c.chiffre_affaires_genere, 0) / Math.max(rapportCoiffeurs.filter(c => c.nombre_prestations > 0).length, 1))}`}
+                icon={<TrendingUp />}
+                color="warning"
+                subtitle="FCFA"
+                delay={0.3}
+              />
+            </Grid>
+          </Grid>
+
+          <AnimatedTable 
+            title="Statistiques par coiffeur" 
+            subtitle={`Performance de ${rapportCoiffeurs.length} coiffeur(s)`}
+            exportable
+            exportData={rapportCoiffeurs
+              .sort((a, b) => b.chiffre_affaires_genere - a.chiffre_affaires_genere)
+              .map((coiffeur, index) => ({
+                'Rang': index + 1,
+                'Coiffeur': `${coiffeur.prenom} ${coiffeur.nom}`,
+                'Prestations réalisées': coiffeur.nombre_prestations,
+                'Clients uniques': coiffeur.nombre_clients_uniques,
+                'CA généré': `${formatCurrency(coiffeur.chiffre_affaires_genere)} FCFA`,
+                'CA moyen': `${formatCurrency(coiffeur.chiffre_affaires_moyen)} FCFA`
+              }))}
+            exportTitle={`Statistiques_Coiffeurs_${dateDebut}_${dateFin}`}
+          >
+            <TableContainer>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700 }}>Coiffeur</TableCell>
+                    <TableCell align="center" sx={{ fontWeight: 700 }}>Prestations</TableCell>
+                    <TableCell align="center" sx={{ fontWeight: 700 }}>Clients uniques</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 700 }}>CA généré</TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 700 }}>CA moyen</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {rapportCoiffeurs
+                    .sort((a, b) => b.chiffre_affaires_genere - a.chiffre_affaires_genere)
+                    .map((coiffeur, index) => (
+                      <motion.tr
+                        key={index}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.3, delay: index * 0.05 }}
+                        component={TableRow}
+                        sx={{
+                          '&:hover': {
+                            bgcolor: alpha(theme.palette.primary.main, 0.05),
+                            transform: 'scale(1.01)',
+                          },
+                          transition: 'all 0.2s ease',
+                        }}
+                      >
+                        <TableCell>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                            <Avatar 
+                              sx={{ 
+                                bgcolor: index === 0 ? 'warning.main' : index === 1 ? 'info.main' : index === 2 ? 'error.main' : 'primary.main',
+                                width: 48,
+                                height: 48,
+                                fontWeight: 700,
+                              }}
+                            >
+                              {index < 3 ? (
+                                <EmojiEvents sx={{ fontSize: 24 }} />
+                              ) : (
+                                `${coiffeur.prenom.charAt(0)}${coiffeur.nom.charAt(0)}`
+                              )}
+                            </Avatar>
+                            <Box>
+                              <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                                {coiffeur.prenom} {coiffeur.nom}
+                              </Typography>
+                              {index < 3 && (
+                                <Chip 
+                                  label={index === 0 ? "🥇 Meilleur" : index === 1 ? "🥈 2ème" : "🥉 3ème"}
+                                  size="small"
+                                  color={index === 0 ? "warning" : index === 1 ? "info" : "error"}
+                                  sx={{ fontWeight: 600, mt: 0.5 }}
+                                />
+                              )}
+                            </Box>
+                          </Box>
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip 
+                            label={coiffeur.nombre_prestations} 
+                            size="small" 
+                            color={coiffeur.nombre_prestations > 0 ? "primary" : "default"}
+                            sx={{ fontWeight: 700, minWidth: 60 }}
+                          />
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip 
+                            label={coiffeur.nombre_clients_uniques} 
+                            size="small" 
+                            variant="outlined"
+                            sx={{ fontWeight: 600, minWidth: 60 }}
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body1" sx={{ fontWeight: 700, color: 'success.main' }}>
+                            {formatCurrency(coiffeur.chiffre_affaires_genere)} FCFA
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {formatCurrency(coiffeur.chiffre_affaires_moyen)} FCFA
+                          </Typography>
+                        </TableCell>
+                      </motion.tr>
+                    ))}
+                  {!rapportCoiffeurs.length && (
+                    <TableRow>
+                      <TableCell colSpan={5} align="center" sx={{ py: 6 }}>
+                        <WorkOutline sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
+                        <Typography variant="h6" color="text.secondary">
+                          Aucun coiffeur trouvé
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </AnimatedTable>
         </>
       )}
     </Box>
@@ -1179,11 +1823,14 @@ const Statistiques = () => {
               color: 'primary.main',
             }
           }}
+          variant="scrollable"
+          scrollButtons="auto"
         >
           <Tab label="Rapport Journalier" icon={<CalendarToday />} iconPosition="start" />
           <Tab label="Rapport de Période" icon={<TrendingUp />} iconPosition="start" />
           <Tab label="Prestations" icon={<ContentCut />} iconPosition="start" />
           <Tab label="Fidélité" icon={<Star />} iconPosition="start" />
+          <Tab label="Coiffeurs" icon={<WorkOutline />} iconPosition="start" />
         </Tabs>
       </Box>
 
@@ -1214,6 +1861,7 @@ const Statistiques = () => {
             {tabValue === 1 && renderRapportPeriode()}
             {tabValue === 2 && renderRapportPrestations()}
             {tabValue === 3 && renderRapportFidelite()}
+            {tabValue === 4 && renderRapportCoiffeurs()}
           </motion.div>
         )}
       </AnimatePresence>

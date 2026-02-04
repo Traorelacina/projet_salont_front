@@ -40,6 +40,8 @@ import {
   Stack,
   Avatar,
   alpha,
+  useTheme,
+  useMediaQuery,
 } from '@mui/material';
 import { DataGrid } from '@mui/x-data-grid';
 import { 
@@ -65,9 +67,12 @@ import {
   PercentOutlined,
   ReceiptLong,
   Loyalty,
+  ContentCut,
+  Close,
+  Warning,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
-import { passagesAPI, clientsAPI, prestationsAPI, paiementsAPI } from '../services/api';
+import { passagesAPI, clientsAPI, prestationsAPI, paiementsAPI, usersAPI } from '../services/api';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
@@ -127,8 +132,16 @@ const ClientSearchItem = React.memo(({ client, onSelect }) => (
 
 ClientSearchItem.displayName = 'ClientSearchItem';
 
-// Composant optimisé pour la ligne de prestation avec contrôle de quantité
-const PrestationRow = React.memo(({ prestation, selected, selectedPrestation, onToggle, onQuantityChange }) => {
+// Composant optimisé pour la ligne de prestation avec contrôle de quantité ET sélection de coiffeur
+const PrestationRow = React.memo(({ 
+  prestation, 
+  selected, 
+  selectedPrestation, 
+  onToggle, 
+  onQuantityChange,
+  onCoiffeurChange,
+  coiffeurs 
+}) => {
   const handleClick = useCallback(() => {
     onToggle(prestation);
   }, [prestation, onToggle]);
@@ -146,6 +159,11 @@ const PrestationRow = React.memo(({ prestation, selected, selectedPrestation, on
       onQuantityChange(prestation.id, selectedPrestation.quantite - 1);
     }
   }, [selected, selectedPrestation, prestation.id, onQuantityChange]);
+
+  const handleCoiffeurSelect = useCallback((e) => {
+    e.stopPropagation();
+    onCoiffeurChange(prestation.id, e.target.value);
+  }, [prestation.id, onCoiffeurChange]);
 
   return (
     <TableRow 
@@ -204,6 +222,33 @@ const PrestationRow = React.memo(({ prestation, selected, selectedPrestation, on
               <Add fontSize="small" />
             </IconButton>
           </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary">-</Typography>
+        )}
+      </TableCell>
+      <TableCell align="center" sx={{ minWidth: 200 }}>
+        {selected ? (
+          <FormControl size="small" fullWidth onClick={(e) => e.stopPropagation()}>
+            <Select
+              value={selectedPrestation?.coiffeur_id || ''}
+              onChange={handleCoiffeurSelect}
+              displayEmpty
+              startAdornment={
+                <InputAdornment position="start">
+                  <ContentCut fontSize="small" />
+                </InputAdornment>
+              }
+            >
+              <MenuItem value="">
+                <em>Non assigné</em>
+              </MenuItem>
+              {coiffeurs.map((coiffeur) => (
+                <MenuItem key={coiffeur.id} value={coiffeur.id}>
+                  {coiffeur.prenom} {coiffeur.nom}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         ) : (
           <Typography variant="body2" color="text.secondary">-</Typography>
         )}
@@ -310,7 +355,7 @@ const RedirectAnimation = () => {
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
               <ArrowForward sx={{ animation: 'slideRight 1.5s infinite' }} />
               <Typography variant="body2" color="success.main" sx={{ fontWeight: 600 }}>
-                Téléchargement du reçu en cours
+                Ouverture de la fenêtre d'impression
               </Typography>
             </Box>
           </Fade>
@@ -336,8 +381,13 @@ const RedirectAnimation = () => {
 
 const Passages = () => {
   const navigate = useNavigate();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const isTablet = useMediaQuery(theme.breakpoints.down('md'));
+  
   const [passages, setPassages] = useState([]);
   const [prestations, setPrestations] = useState([]);
+  const [coiffeurs, setCoiffeurs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
   const [error, setError] = useState('');
@@ -354,7 +404,7 @@ const Passages = () => {
   const [selectedClient, setSelectedClient] = useState(null);
   const [showNewClientForm, setShowNewClientForm] = useState(false);
 
-  // États pour le nouveau client - SANS CODE CLIENT visible
+  // États pour le nouveau client
   const [newClientData, setNewClientData] = useState({
     nom: '',
     prenom: '',
@@ -369,7 +419,7 @@ const Passages = () => {
   const [remiseType, setRemiseType] = useState('aucune');
   const [remiseValue, setRemiseValue] = useState('');
 
-  // États pour le paiement (mode de paiement seulement)
+  // États pour le paiement
   const [modePaiement, setModePaiement] = useState('especes');
 
   // États pour les notifications
@@ -388,6 +438,13 @@ const Passages = () => {
   // États pour les actions en cours
   const [creatingPassage, setCreatingPassage] = useState(false);
 
+  // État pour le dialogue de confirmation de suppression
+  const [deleteDialog, setDeleteDialog] = useState({
+    open: false,
+    passageId: null,
+    passageInfo: null,
+  });
+
   // Ref pour le debounce
   const searchTimeoutRef = useRef(null);
 
@@ -405,16 +462,17 @@ const Passages = () => {
     setNotification(prev => ({ ...prev, open: false }));
   }, []);
 
-  // Chargement optimisé des données avec useCallback
+  // Chargement optimisé des données
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [passagesRes, prestationsRes] = await Promise.all([
+      const [passagesRes, prestationsRes, coiffeursRes] = await Promise.all([
         passagesAPI.getAll({
           page: paginationModel.page + 1,
           per_page: paginationModel.pageSize,
         }),
         prestationsAPI.getAll({ actif: true }),
+        usersAPI.getCoiffeurs({ with_prestations: false }),
       ]);
 
       const passagesData = passagesRes.data.data?.data || passagesRes.data.data || [];
@@ -423,6 +481,9 @@ const Passages = () => {
 
       const prestationsData = prestationsRes.data.data?.data || prestationsRes.data.data || [];
       setPrestations(prestationsData);
+
+      const coiffeursData = coiffeursRes.data.data?.data || coiffeursRes.data.data || [];
+      setCoiffeurs(coiffeursData);
 
       setError('');
     } catch (error) {
@@ -438,7 +499,7 @@ const Passages = () => {
     loadData();
   }, [loadData]);
 
-  // Recherche de clients optimisée avec debounce manuel
+  // Recherche de clients optimisée
   const handleSearchClient = useCallback(async (query) => {
     if (!query.trim()) {
       setSearchResults([]);
@@ -471,7 +532,7 @@ const Passages = () => {
     }
   }, [showNotification]);
 
-  // Debounce optimisé de la recherche
+  // Debounce de la recherche
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
@@ -492,14 +553,14 @@ const Passages = () => {
     };
   }, [searchQuery, handleSearchClient]);
 
-  // Sélectionner un client existant et ouvrir le dialogue de passage
+  // Sélectionner un client
   const handleSelectClient = useCallback(async (client) => {
     setSelectedClient(client);
     setSearchResults([]);
     setSearchQuery('');
     setOpenDialog(true);
     
-    // Charger les informations de fidélité en arrière-plan
+    // Charger les informations de fidélité
     passagesAPI.checkFidelity(client.id)
       .then(response => setFidelityInfo(response.data.data))
       .catch(error => {
@@ -508,22 +569,19 @@ const Passages = () => {
       });
   }, [showNotification]);
 
-  // Créer un nouveau client avec useCallback
+  // Créer un nouveau client
   const handleCreateClient = useCallback(async () => {
-    // Validation - seuls nom et prénom sont obligatoires
     if (!newClientData.nom || !newClientData.prenom) {
       setError('Le nom et le prénom sont obligatoires');
       return;
     }
 
     try {
-      // Préparer les données - ne pas envoyer de chaîne vide pour le téléphone
       const dataToSend = {
         nom: newClientData.nom.trim(),
         prenom: newClientData.prenom.trim(),
       };
       
-      // Ajouter le téléphone seulement s'il n'est pas vide
       if (newClientData.telephone && newClientData.telephone.trim()) {
         dataToSend.telephone = newClientData.telephone.trim();
       }
@@ -547,7 +605,7 @@ const Passages = () => {
     }
   }, [newClientData, handleSelectClient, showNotification]);
 
-  // Gérer la sélection des prestations (optimisé)
+  // Gérer la sélection des prestations
   const handleTogglePrestation = useCallback((prestation) => {
     setSelectedPrestations(prev => {
       const isSelected = prev.some(p => p.id === prestation.id);
@@ -558,6 +616,7 @@ const Passages = () => {
           libelle: prestation.libelle || prestation.nom,
           prix: prestation.prix,
           quantite: 1,
+          coiffeur_id: null,
         }];
       } else {
         return prev.filter(p => p.id !== prestation.id);
@@ -576,7 +635,18 @@ const Passages = () => {
     );
   }, []);
 
-  // Vérifier si une prestation est sélectionnée (mémorisé)
+  // Gérer le changement de coiffeur
+  const handleCoiffeurChange = useCallback((prestationId, coiffeurId) => {
+    setSelectedPrestations(prev => 
+      prev.map(p => 
+        p.id === prestationId 
+          ? { ...p, coiffeur_id: coiffeurId || null }
+          : p
+      )
+    );
+  }, []);
+
+  // Vérifier si une prestation est sélectionnée
   const isPrestationSelected = useCallback((prestationId) => {
     return selectedPrestations.some(p => p.id === prestationId);
   }, [selectedPrestations]);
@@ -586,12 +656,12 @@ const Passages = () => {
     return selectedPrestations.find(p => p.id === prestationId);
   }, [selectedPrestations]);
 
-  // Calculer le sous-total avec useMemo
+  // Calculer le sous-total
   const calculateSubtotal = useMemo(() => {
     return selectedPrestations.reduce((total, p) => total + (p.prix * p.quantite), 0);
   }, [selectedPrestations]);
 
-  // Calculer la remise avec useMemo
+  // Calculer la remise
   const calculateRemise = useMemo(() => {
     if (remiseType === 'aucune' || !remiseValue || remiseValue === '') return 0;
     const numericValue = Number(remiseValue);
@@ -606,13 +676,13 @@ const Passages = () => {
     return 0;
   }, [remiseType, remiseValue, calculateSubtotal]);
 
-  // Calculer le montant total avec useMemo
+  // Calculer le montant total
   const calculateTotal = useMemo(() => {
     if (fidelityInfo?.est_gratuit) return 0;
     return Math.max(0, calculateSubtotal - calculateRemise);
   }, [calculateSubtotal, calculateRemise, fidelityInfo]);
 
-  // Fermer le dialogue avec useCallback
+  // Fermer le dialogue
   const handleCloseDialog = useCallback(() => {
     setOpenDialog(false);
     setSelectedClient(null);
@@ -624,7 +694,7 @@ const Passages = () => {
     setError('');
   }, []);
 
-  // Créer le passage ET le paiement en un seul clic
+  // Créer le passage ET le paiement
   const handleCreatePassageAndPayment = useCallback(async () => {
     if (!selectedClient) {
       setError('Veuillez sélectionner un client');
@@ -638,13 +708,13 @@ const Passages = () => {
     setCreatingPassage(true);
 
     try {
-      // 1. Créer le passage
       const passageData = {
         client_id: selectedClient.id,
         date_passage: new Date().toISOString(),
         prestations: selectedPrestations.map(p => ({
           id: p.id,
           quantite: p.quantite,
+          coiffeur_id: p.coiffeur_id,
         })),
         notes: remiseType !== 'aucune' && remiseValue 
           ? `Remise appliquée: ${remiseType === 'pourcentage' ? `${remiseValue}%` : `${remiseValue} FCFA`}` 
@@ -656,16 +726,13 @@ const Passages = () => {
       
       handleCloseDialog();
       
-      // 2. Vérifier si c'est un passage gratuit
       if (newPassage.est_gratuit) {
-        // Afficher le dialogue de félicitations
         setShowCongratulationsDialog(true);
         showNotification(`Passage #${newPassage.id} créé - Passage gratuit offert !`, 'success');
         loadData();
         return;
       }
 
-      // 3. Créer le paiement automatiquement
       const montantTotal = calculateTotal;
       
       const paymentResponse = await paiementsAPI.create({
@@ -677,32 +744,50 @@ const Passages = () => {
 
       showNotification(`Passage #${newPassage.id} créé et paiement enregistré avec succès !`, 'success');
       
-      // 4. Afficher l'animation et télécharger le reçu
       setShowRedirectAnimation(true);
       
-      // 5. Télécharger le reçu PDF
       setTimeout(async () => {
         try {
           const receiptResponse = await paiementsAPI.getReceipt(paymentResponse.data.data.id);
           
-          // Créer un blob et télécharger
+          // Créer un blob et ouvrir dans une nouvelle fenêtre pour impression
           const blob = new Blob([receiptResponse.data], { type: 'application/pdf' });
           const url = window.URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `recu-${paymentResponse.data.data.numero_recu || paymentResponse.data.data.id}.pdf`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(url);
           
-          showNotification('Reçu téléchargé avec succès !', 'success');
+          // Ouvrir le PDF dans une nouvelle fenêtre
+          const printWindow = window.open(url, '_blank');
+          
+          if (printWindow) {
+            // Attendre que le PDF soit chargé avant de lancer l'impression
+            printWindow.onload = () => {
+              setTimeout(() => {
+                printWindow.print();
+              }, 250);
+            };
+            
+            showNotification('Fenêtre d\'impression du reçu ouverte !', 'success');
+          } else {
+            // Si le popup est bloqué, télécharger le fichier
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `recu-${paymentResponse.data.data.numero_recu || paymentResponse.data.data.id}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showNotification('Popup bloqué. Reçu téléchargé à la place.', 'info');
+          }
+          
+          // Nettoyer l'URL après un délai
+          setTimeout(() => {
+            window.URL.revokeObjectURL(url);
+          }, 60000); // 1 minute
+          
         } catch (error) {
-          console.error('Error downloading receipt:', error);
-          showNotification('Paiement enregistré mais erreur lors du téléchargement du reçu', 'warning');
+          console.error('Error printing receipt:', error);
+          showNotification('Paiement enregistré mais erreur lors de l\'impression du reçu', 'warning');
         }
         
-        // 6. Masquer l'animation et recharger les données
         setTimeout(() => {
           setShowRedirectAnimation(false);
           loadData();
@@ -721,36 +806,60 @@ const Passages = () => {
     }
   }, [selectedClient, selectedPrestations, calculateTotal, modePaiement, remiseType, remiseValue, handleCloseDialog, loadData, showNotification]);
 
-  // Gérer la confirmation des félicitations et redirection
+  // Gérer la confirmation des félicitations
   const handleCongratulationsConfirm = useCallback(async () => {
     setShowCongratulationsDialog(false);
     setShowRedirectAnimation(true);
     
-    // Recharger les données
     loadData();
     
-    // Masquer l'animation après quelques secondes
     setTimeout(() => {
       setShowRedirectAnimation(false);
     }, 2500);
   }, [loadData]);
 
-  // Supprimer un passage avec useCallback
-  const handleDelete = useCallback(async (id) => {
-    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce passage ?')) {
-      try {
-        await passagesAPI.delete(id);
-        loadData();
-        showNotification('Passage supprimé avec succès');
-      } catch (error) {
-        console.error('Error deleting passage:', error);
-        setError('Erreur lors de la suppression du passage');
-        showNotification('Erreur lors de la suppression du passage', 'error');
-      }
-    }
-  }, [loadData, showNotification]);
+  // Ouvrir le dialogue de confirmation de suppression
+  const handleOpenDeleteDialog = useCallback((passage) => {
+    setDeleteDialog({
+      open: true,
+      passageId: passage.id,
+      passageInfo: {
+        numero: passage.numero_passage || passage.id,
+        client: passage.client,
+        date: passage.date_passage,
+        est_gratuit: passage.est_gratuit,
+      },
+    });
+  }, []);
 
-  // Définition des colonnes avec useMemo - Code client en première colonne, téléphone sous le nom
+  // Fermer le dialogue de suppression
+  const handleCloseDeleteDialog = useCallback(() => {
+    setDeleteDialog({
+      open: false,
+      passageId: null,
+      passageInfo: null,
+    });
+  }, []);
+
+  // Confirmer la suppression d'un passage
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteDialog.passageId) return;
+
+    try {
+      await passagesAPI.delete(deleteDialog.passageId);
+      
+      handleCloseDeleteDialog();
+      loadData();
+      
+      showNotification('Passage supprimé avec succès. Le nombre de passages du client a été réduit.', 'success');
+    } catch (error) {
+      console.error('Error deleting passage:', error);
+      const errorMessage = error.response?.data?.message || 'Erreur lors de la suppression du passage';
+      showNotification(errorMessage, 'error');
+    }
+  }, [deleteDialog.passageId, handleCloseDeleteDialog, loadData, showNotification]);
+
+  // Définition des colonnes
   const columns = useMemo(() => [
     {
       field: 'code_client',
@@ -857,14 +966,19 @@ const Passages = () => {
       renderCell: (params) => (
         <IconButton 
           size="small" 
-          onClick={() => handleDelete(params.row.id)} 
+          onClick={() => handleOpenDeleteDialog(params.row)} 
           color="error"
+          sx={{
+            '&:hover': {
+              bgcolor: 'error.lighter',
+            }
+          }}
         >
           <Delete fontSize="small" />
         </IconButton>
       ),
     },
-  ], [handleDelete]);
+  ], [handleOpenDeleteDialog]);
 
   // Icônes de mode de paiement
   const paymentIcons = useMemo(() => ({
@@ -875,12 +989,19 @@ const Passages = () => {
   }), []);
 
   return (
-    <Box>
+    <Box sx={{ p: { xs: 2, md: 3 } }}>
       {/* Animation de redirection */}
       {showRedirectAnimation && <RedirectAnimation />}
 
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
+      <Box sx={{ 
+        display: 'flex', 
+        flexDirection: { xs: 'column', sm: 'row' },
+        justifyContent: 'space-between', 
+        alignItems: { xs: 'flex-start', sm: 'center' },
+        mb: 3,
+        gap: 2,
+      }}>
+        <Typography variant={isMobile ? "h5" : "h4"} sx={{ fontWeight: 700 }}>
           Gestion des passages
         </Typography>
       </Box>
@@ -893,9 +1014,9 @@ const Passages = () => {
         </Fade>
       )}
 
-      {/* Barre de recherche client en haut */}
+      {/* Barre de recherche client */}
       <Grow in={true} timeout={500}>
-        <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
+        <Paper elevation={2} sx={{ p: { xs: 2, md: 3 }, mb: 3 }}>
           <Grid container spacing={2} alignItems="center">
             <Grid item xs={12} md={8}>
               <TextField
@@ -961,7 +1082,7 @@ const Passages = () => {
 
       {/* Liste des passages */}
       <Grow in={true} timeout={700}>
-        <Paper elevation={2} sx={{ p: 2, mb: 3 }}>
+        <Paper elevation={2} sx={{ p: { xs: 1, md: 2 }, mb: 3 }}>
           <Box sx={{ height: 600, width: '100%' }}>
             <DataGrid
               rows={passages}
@@ -1004,18 +1125,26 @@ const Passages = () => {
         </Paper>
       </Grow>
 
-      {/* Dialogue de création de nouveau client - SANS CODE CLIENT */}
+      {/* Dialogue de création de nouveau client */}
       <Dialog 
         open={showNewClientForm} 
         onClose={() => setShowNewClientForm(false)} 
         maxWidth="sm" 
         fullWidth
+        fullScreen={isMobile}
         TransitionComponent={Zoom}
       >
         <DialogTitle>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <PersonAdd />
-            Nouveau client
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <PersonAdd />
+              Nouveau client
+            </Box>
+            {isMobile && (
+              <IconButton onClick={() => setShowNewClientForm(false)} edge="end">
+                <Close />
+              </IconButton>
+            )}
           </Box>
         </DialogTitle>
         <DialogContent>
@@ -1065,16 +1194,18 @@ const Passages = () => {
           </Grid>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button 
-            onClick={() => {
-              setShowNewClientForm(false);
-              setNewClientData({ nom: '', prenom: '', telephone: '' });
-              setError('');
-            }}
-          >
-            Annuler
-          </Button>
-          <Button onClick={handleCreateClient} variant="contained">
+          {!isMobile && (
+            <Button 
+              onClick={() => {
+                setShowNewClientForm(false);
+                setNewClientData({ nom: '', prenom: '', telephone: '' });
+                setError('');
+              }}
+            >
+              Annuler
+            </Button>
+          )}
+          <Button onClick={handleCreateClient} variant="contained" fullWidth={isMobile}>
             Créer et ajouter un passage
           </Button>
         </DialogActions>
@@ -1086,15 +1217,23 @@ const Passages = () => {
         onClose={handleCloseDialog} 
         maxWidth="lg" 
         fullWidth
+        fullScreen={isTablet}
         TransitionComponent={Zoom}
       >
         <DialogTitle>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <ShoppingCart />
-            Sélectionner les prestations
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <ShoppingCart />
+              Sélectionner les prestations
+            </Box>
+            {isTablet && (
+              <IconButton onClick={handleCloseDialog} edge="end">
+                <Close />
+              </IconButton>
+            )}
           </Box>
         </DialogTitle>
-        <DialogContent>
+        <DialogContent sx={{ p: { xs: 2, md: 3 } }}>
           {error && (
             <Fade in={true}>
               <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
@@ -1104,110 +1243,118 @@ const Passages = () => {
           )}
 
           {selectedClient && (
-  <Grow in={true}>
-    <Card sx={{ 
-      bgcolor: alpha('#1976d2', 0.06), 
-      mb: 2,
-      border: '1px solid',
-      borderColor: 'primary.light',
-      borderRadius: 1.5,
-      py: 0.5,
-      px: 1.5,
-    }}>
-      <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-        <Box sx={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
-          flexWrap: 'nowrap', 
-          gap: 1.5 
-        }}>
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            <Avatar
-              sx={{
-                width: 48,
-                height: 48,
-                bgcolor: 'primary.main',
-                color: 'white',
-                fontWeight: 600,
-                fontSize: '1.1rem',
-              }}
-            >
-              {selectedClient.prenom?.charAt(0)}{selectedClient.nom?.charAt(0)}
-            </Avatar>
-            <Box>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.3 }}>
-                {selectedClient.prenom} {selectedClient.nom}
-              </Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.25 }}>
-                {selectedClient.code_client && (
-                  <Chip 
-                    label={selectedClient.code_client} 
-                    size="small"
-                    sx={{ 
-                      fontSize: '0.75rem',
-                      height: 20,
-                      fontWeight: 500,
-                      bgcolor: 'white',
-                      border: '1px solid',
-                      borderColor: 'primary.light',
-                    }}
-                  />
-                )}
-                {selectedClient.telephone ? (
-                  <Stack direction="row" alignItems="center" spacing={0.5}>
-                    <Phone fontSize="small" sx={{ fontSize: 14, color: 'text.secondary' }} />
-                    <Typography variant="caption" color="text.secondary">
-                      {selectedClient.telephone}
-                    </Typography>
-                  </Stack>
-                ) : (
-                  <Typography variant="caption" color="text.disabled" fontStyle="italic">
-                    Pas de téléphone
-                  </Typography>
-                )}
-              </Box>
-            </Box>
-          </Stack>
-          {fidelityInfo && fidelityInfo.est_gratuit && (
-            <Zoom in={true} timeout={500}>
-              <Chip 
-                icon={<CardGiftcard fontSize="small" />}
-                label="GRATUIT" 
-                color="success"
-                size="small"
-                sx={{ 
-                  fontWeight: 700, 
-                  height: 28, 
-                  fontSize: '0.8rem',
-                  '& .MuiChip-icon': { fontSize: 16 }
-                }}
-              />
-            </Zoom>
+            <Grow in={true}>
+              <Card sx={{ 
+                bgcolor: alpha('#1976d2', 0.06), 
+                mb: 2,
+                border: '1px solid',
+                borderColor: 'primary.light',
+                borderRadius: 1.5,
+              }}>
+                <CardContent sx={{ py: { xs: 1.5, md: 2 }, px: { xs: 1.5, md: 2 }, '&:last-child': { pb: { xs: 1.5, md: 2 } } }}>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    gap: 1.5 
+                  }}>
+                    <Stack direction="row" spacing={1.5} alignItems="center" sx={{ width: { xs: '100%', sm: 'auto' } }}>
+                      <Avatar
+                        sx={{
+                          width: { xs: 40, md: 48 },
+                          height: { xs: 40, md: 48 },
+                          bgcolor: 'primary.main',
+                          color: 'white',
+                          fontWeight: 600,
+                          fontSize: { xs: '0.9rem', md: '1.1rem' },
+                        }}
+                      >
+                        {selectedClient.prenom?.charAt(0)}{selectedClient.nom?.charAt(0)}
+                      </Avatar>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.3, fontSize: { xs: '0.9rem', md: '1rem' } }}>
+                          {selectedClient.prenom} {selectedClient.nom}
+                        </Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.25, flexWrap: 'wrap' }}>
+                          {selectedClient.code_client && (
+                            <Chip 
+                              label={selectedClient.code_client} 
+                              size="small"
+                              sx={{ 
+                                fontSize: '0.7rem',
+                                height: 20,
+                                fontWeight: 500,
+                                bgcolor: 'white',
+                                border: '1px solid',
+                                borderColor: 'primary.light',
+                              }}
+                            />
+                          )}
+                          {selectedClient.telephone ? (
+                            <Stack direction="row" alignItems="center" spacing={0.5}>
+                              <Phone fontSize="small" sx={{ fontSize: 14, color: 'text.secondary' }} />
+                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: { xs: '0.7rem', md: '0.75rem' } }}>
+                                {selectedClient.telephone}
+                              </Typography>
+                            </Stack>
+                          ) : (
+                            <Typography variant="caption" color="text.disabled" fontStyle="italic" sx={{ fontSize: { xs: '0.7rem', md: '0.75rem' } }}>
+                              Pas de téléphone
+                            </Typography>
+                          )}
+                        </Box>
+                      </Box>
+                    </Stack>
+                    {fidelityInfo && fidelityInfo.est_gratuit && (
+                      <Zoom in={true} timeout={500}>
+                        <Chip 
+                          icon={<CardGiftcard fontSize="small" />}
+                          label="GRATUIT" 
+                          color="success"
+                          size="small"
+                          sx={{ 
+                            fontWeight: 700, 
+                            height: 28, 
+                            fontSize: '0.8rem',
+                            '& .MuiChip-icon': { fontSize: 16 }
+                          }}
+                        />
+                      </Zoom>
+                    )}
+                  </Box>
+                </CardContent>
+              </Card>
+            </Grow>
           )}
-        </Box>
-      </CardContent>
-    </Card>
-  </Grow>
-)}
 
-          {/* LAYOUT : Prestations et Résumé côte à côte */}
-          <Box sx={{ display: 'flex', gap: 3, flexWrap: { xs: 'wrap', md: 'nowrap' } }}>
-            {/* Colonne gauche : Liste des prestations */}
+          {/* Layout responsive : Prestations et Résumé */}
+          <Box sx={{ 
+            display: 'flex', 
+            gap: 3, 
+            flexDirection: { xs: 'column', md: 'row' },
+          }}>
+            {/* Liste des prestations */}
             <Box sx={{ flex: { xs: '1 1 100%', md: '1 1 58%' }, minWidth: 0 }}>
-              <Typography variant="h6" sx={{ mb: 2 }}>
+              <Typography variant="h6" sx={{ mb: 2, fontSize: { xs: '1rem', md: '1.25rem' } }}>
                 Prestations disponibles
               </Typography>
 
-              <TableContainer sx={{ maxHeight: 500, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+              <TableContainer sx={{ 
+                maxHeight: { xs: 400, md: 500 }, 
+                border: '1px solid', 
+                borderColor: 'divider', 
+                borderRadius: 1,
+              }}>
                 <Table stickyHeader size="small">
                   <TableHead>
                     <TableRow>
                       <TableCell padding="checkbox"></TableCell>
                       <TableCell>Prestation</TableCell>
-                      <TableCell align="center" sx={{ width: 150 }}>Quantité</TableCell>
+                      <TableCell align="center" sx={{ width: { xs: 100, md: 150 } }}>Quantité</TableCell>
+                      <TableCell align="center" sx={{ width: { xs: 150, md: 200 }, display: { xs: 'none', sm: 'table-cell' } }}>Coiffeur</TableCell>
                       <TableCell align="right">Prix unit.</TableCell>
-                      <TableCell align="right">Total</TableCell>
+                      <TableCell align="right" sx={{ display: { xs: 'none', sm: 'table-cell' } }}>Total</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -1219,6 +1366,8 @@ const Passages = () => {
                         selectedPrestation={getSelectedPrestation(prestation.id)}
                         onToggle={handleTogglePrestation}
                         onQuantityChange={handleQuantityChange}
+                        onCoiffeurChange={handleCoiffeurChange}
+                        coiffeurs={coiffeurs}
                       />
                     ))}
                   </TableBody>
@@ -1226,14 +1375,13 @@ const Passages = () => {
               </TableContainer>
             </Box>
 
-            {/* Colonne droite : Résumé de la commande */}
+            {/* Résumé de la commande */}
             <Box sx={{ 
               flex: { xs: '1 1 100%', md: '0 0 38%' }, 
               minWidth: 0,
-              maxWidth: { md: '420px' }
             }}>
-              <Paper elevation={3} sx={{ p: 3, bgcolor: 'grey.50', height: 'fit-content' }}>
-                <Typography variant="h6" sx={{ mb: 2, fontWeight: 700 }}>
+              <Paper elevation={3} sx={{ p: { xs: 2, md: 3 }, bgcolor: 'grey.50', height: 'fit-content', position: { md: 'sticky' }, top: { md: 16 } }}>
+                <Typography variant="h6" sx={{ mb: 2, fontWeight: 700, fontSize: { xs: '1rem', md: '1.25rem' } }}>
                   Résumé de la commande
                 </Typography>
                 
@@ -1244,47 +1392,68 @@ const Passages = () => {
                 ) : (
                   <Box>
                     {/* Liste des prestations sélectionnées */}
-                    <Box sx={{ mb: 2, maxHeight: 200, overflowY: 'auto', pr: 1 }}>
-                      {selectedPrestations.map((p) => (
-                        <Fade key={p.id} in={true}>
-                          <Box sx={{ 
-                            display: 'flex', 
-                            justifyContent: 'space-between', 
-                            mb: 1,
-                            pb: 1,
-                            borderBottom: '1px solid',
-                            borderColor: 'divider'
-                          }}>
-                            <Box sx={{ flex: 1, minWidth: 0, mr: 1 }}>
-                              <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                                {p.libelle}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary">
-                                {p.quantite} x {p.prix} FCFA
-                              </Typography>
+                    <Box sx={{ mb: 2, maxHeight: 250, overflowY: 'auto', pr: 1 }}>
+                      {selectedPrestations.map((p) => {
+                        const coiffeur = coiffeurs.find(c => c.id === p.coiffeur_id);
+                        return (
+                          <Fade key={p.id} in={true}>
+                            <Box sx={{ 
+                              display: 'flex', 
+                              flexDirection: 'column',
+                              mb: 1.5,
+                              pb: 1.5,
+                              borderBottom: '1px solid',
+                              borderColor: 'divider'
+                            }}>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                                <Box sx={{ flex: 1, minWidth: 0, mr: 1 }}>
+                                  <Typography variant="body2" sx={{ fontWeight: 600, fontSize: { xs: '0.85rem', md: '0.875rem' } }} noWrap>
+                                    {p.libelle}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: { xs: '0.7rem', md: '0.75rem' } }}>
+                                    {p.quantite} x {p.prix} FCFA
+                                  </Typography>
+                                </Box>
+                                <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main', flexShrink: 0, fontSize: { xs: '0.85rem', md: '0.875rem' } }}>
+                                  {p.prix * p.quantite} FCFA
+                                </Typography>
+                              </Box>
+                              {coiffeur && (
+                                <Box sx={{ 
+                                  display: 'flex', 
+                                  alignItems: 'center', 
+                                  gap: 0.5,
+                                  mt: 0.5,
+                                  p: 0.5,
+                                  bgcolor: 'success.lighter',
+                                  borderRadius: 0.5
+                                }}>
+                                  <ContentCut sx={{ fontSize: { xs: 12, md: 14 }, color: 'success.main' }} />
+                                  <Typography variant="caption" sx={{ color: 'success.main', fontWeight: 500, fontSize: { xs: '0.7rem', md: '0.75rem' } }}>
+                                    {coiffeur.prenom} {coiffeur.nom}
+                                  </Typography>
+                                </Box>
+                              )}
                             </Box>
-                            <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main', flexShrink: 0 }}>
-                              {p.prix * p.quantite} FCFA
-                            </Typography>
-                          </Box>
-                        </Fade>
-                      ))}
+                          </Fade>
+                        );
+                      })}
                     </Box>
 
                     <Divider sx={{ my: 2 }} />
 
                     {/* Sous-total */}
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
-                      <Typography variant="body1">Sous-total</Typography>
-                      <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                      <Typography variant="body1" sx={{ fontSize: { xs: '0.9rem', md: '1rem' } }}>Sous-total</Typography>
+                      <Typography variant="body1" sx={{ fontWeight: 600, fontSize: { xs: '0.9rem', md: '1rem' } }}>
                         {calculateSubtotal} FCFA
                       </Typography>
                     </Box>
 
                     {/* Section Remise */}
                     {!fidelityInfo?.est_gratuit && (
-                      <Box sx={{ mb: 2, p: 2, bgcolor: 'warning.lighter', borderRadius: 1 }}>
-                        <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
+                      <Box sx={{ mb: 2, p: { xs: 1.5, md: 2 }, bgcolor: 'warning.lighter', borderRadius: 1 }}>
+                        <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600, fontSize: { xs: '0.85rem', md: '0.875rem' } }}>
                           <PercentOutlined sx={{ fontSize: 18, mr: 0.5, verticalAlign: 'middle' }} />
                           Remise
                         </Typography>
@@ -1326,7 +1495,6 @@ const Passages = () => {
                           )}
                         </Box>
 
-                        {/* Affichage de la remise appliquée */}
                         {remiseType !== 'aucune' && calculateRemise > 0 && (
                           <Box sx={{ 
                             display: 'flex', 
@@ -1336,10 +1504,10 @@ const Passages = () => {
                             borderTop: '1px solid',
                             borderColor: 'warning.main'
                           }}>
-                            <Typography variant="body2" sx={{ fontWeight: 600, color: 'error.main' }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600, color: 'error.main', fontSize: { xs: '0.85rem', md: '0.875rem' } }}>
                               Remise appliquée
                             </Typography>
-                            <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main' }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main', fontSize: { xs: '0.85rem', md: '0.875rem' } }}>
                               - {calculateRemise} FCFA
                             </Typography>
                           </Box>
@@ -1347,20 +1515,20 @@ const Passages = () => {
                       </Box>
                     )}
 
-                    {/* Affichage du montant après remise */}
+                    {/* Montant après remise */}
                     {remiseType !== 'aucune' && calculateRemise > 0 && !fidelityInfo?.est_gratuit && (
                       <Box sx={{ 
                         display: 'flex', 
                         justifyContent: 'space-between', 
                         mb: 2,
-                        p: 1.5,
+                        p: { xs: 1, md: 1.5 },
                         bgcolor: 'success.lighter',
                         borderRadius: 1
                       }}>
-                        <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                        <Typography variant="body1" sx={{ fontWeight: 600, fontSize: { xs: '0.9rem', md: '1rem' } }}>
                           Montant après remise
                         </Typography>
-                        <Typography variant="body1" sx={{ fontWeight: 700, color: 'success.main' }}>
+                        <Typography variant="body1" sx={{ fontWeight: 700, color: 'success.main', fontSize: { xs: '0.9rem', md: '1rem' } }}>
                           {calculateTotal} FCFA
                         </Typography>
                       </Box>
@@ -1371,7 +1539,7 @@ const Passages = () => {
                     {/* Mode de paiement */}
                     {!fidelityInfo?.est_gratuit && (
                       <Box sx={{ mt: 2 }}>
-                        <FormControl fullWidth>
+                        <FormControl fullWidth size={isMobile ? "medium" : "small"}>
                           <InputLabel>Mode de paiement</InputLabel>
                           <Select
                             value={modePaiement}
@@ -1417,18 +1585,21 @@ const Passages = () => {
             </Box>
           </Box>
         </DialogContent>
-        <DialogActions sx={{ px: 3, pb: 2 }}>
-          <Button onClick={handleCloseDialog} size="large">
-            Annuler
-          </Button>
+        <DialogActions sx={{ px: { xs: 2, md: 3 }, pb: 2, flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
+          {!isTablet && (
+            <Button onClick={handleCloseDialog} size="large">
+              Annuler
+            </Button>
+          )}
           <Button 
             onClick={handleCreatePassageAndPayment} 
             variant="contained"
             disabled={selectedPrestations.length === 0 || creatingPassage}
             size="large"
+            fullWidth={isMobile}
             startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <Receipt />}
             sx={{
-              minWidth: 250,
+              minWidth: { sm: 250 },
               position: 'relative',
               overflow: 'hidden',
               transition: 'all 0.3s ease',
@@ -1448,34 +1619,114 @@ const Passages = () => {
         </DialogActions>
       </Dialog>
 
+      {/* Dialogue de confirmation de suppression */}
+      <Dialog
+        open={deleteDialog.open}
+        onClose={handleCloseDeleteDialog}
+        maxWidth="xs"
+        fullWidth
+        fullScreen={isMobile}
+        TransitionComponent={Zoom}
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, color: 'error.main' }}>
+            <Warning />
+            Confirmer la suppression
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+              Attention : Cette action est irréversible !
+            </Typography>
+            <Typography variant="body2">
+              La suppression d'un passage réduira automatiquement le nombre total de passages du client.
+            </Typography>
+          </Alert>
+
+          {deleteDialog.passageInfo && (
+            <Box sx={{ mt: 2, p: 2, bgcolor: 'grey.50', borderRadius: 1 }}>
+              <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+                Détails du passage :
+              </Typography>
+              <Stack spacing={1}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" color="text.secondary">N° Passage :</Typography>
+                  <Chip label={`#${deleteDialog.passageInfo.numero}`} size="small" />
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" color="text.secondary">Client :</Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    {deleteDialog.passageInfo.client?.prenom} {deleteDialog.passageInfo.client?.nom}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" color="text.secondary">Date :</Typography>
+                  <Typography variant="body2">
+                    {format(new Date(deleteDialog.passageInfo.date), 'dd MMM yyyy', { locale: fr })}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" color="text.secondary">Type :</Typography>
+                  <Chip 
+                    label={deleteDialog.passageInfo.est_gratuit ? "Gratuit" : "Payant"}
+                    color={deleteDialog.passageInfo.est_gratuit ? "success" : "primary"}
+                    size="small"
+                  />
+                </Box>
+              </Stack>
+            </Box>
+          )}
+
+          <Typography variant="body2" sx={{ mt: 2, color: 'text.secondary' }}>
+            Êtes-vous sûr de vouloir supprimer ce passage ?
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={handleCloseDeleteDialog} fullWidth={isMobile}>
+            Annuler
+          </Button>
+          <Button 
+            onClick={handleConfirmDelete} 
+            color="error" 
+            variant="contained"
+            fullWidth={isMobile}
+            startIcon={<Delete />}
+          >
+            Supprimer définitivement
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Dialogue de félicitations pour passage gratuit */}
       <Dialog 
         open={showCongratulationsDialog} 
         onClose={() => {}} 
         maxWidth="sm" 
         fullWidth
+        fullScreen={isMobile}
         TransitionComponent={Zoom}
         PaperProps={{
           sx: {
             background: 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)',
             color: 'white',
             overflow: 'visible',
-            borderRadius: 3,
+            borderRadius: { xs: 0, sm: 3 },
           }
         }}
       >
-        <DialogContent sx={{ textAlign: 'center', py: 6, position: 'relative' }}>
+        <DialogContent sx={{ textAlign: 'center', py: { xs: 4, md: 6 }, px: { xs: 2, md: 3 }, position: 'relative' }}>
           {/* Icône principale */}
           <Box
             sx={{
               position: 'absolute',
-              top: -40,
+              top: { xs: -30, md: -40 },
               left: '50%',
               transform: 'translateX(-50%)',
               bgcolor: 'white',
               borderRadius: '50%',
-              width: 80,
-              height: 80,
+              width: { xs: 60, md: 80 },
+              height: { xs: 60, md: 80 },
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -1483,12 +1734,12 @@ const Passages = () => {
               animation: 'pulse 2s ease-in-out infinite',
             }}
           >
-            <CheckCircle sx={{ fontSize: 50, color: '#11998e' }} />
+            <CheckCircle sx={{ fontSize: { xs: 40, md: 50 }, color: '#11998e' }} />
           </Box>
 
           <Zoom in={showCongratulationsDialog} timeout={600} style={{ transitionDelay: '200ms' }}>
-            <Box sx={{ mt: 4 }}>
-              <Typography variant="h4" sx={{ fontWeight: 700, mb: 2, textShadow: '2px 2px 4px rgba(0,0,0,0.2)' }}>
+            <Box sx={{ mt: { xs: 2, md: 4 } }}>
+              <Typography variant={isMobile ? "h5" : "h4"} sx={{ fontWeight: 700, mb: 2, textShadow: '2px 2px 4px rgba(0,0,0,0.2)' }}>
                 Félicitations
               </Typography>
             </Box>
@@ -1496,7 +1747,7 @@ const Passages = () => {
 
           <Fade in={showCongratulationsDialog} timeout={800} style={{ transitionDelay: '400ms' }}>
             <Box sx={{ mb: 3 }}>
-              <Typography variant="h5" sx={{ fontWeight: 600, mb: 1 }}>
+              <Typography variant={isMobile ? "h6" : "h5"} sx={{ fontWeight: 600, mb: 1 }}>
                 {selectedClient?.prenom} {selectedClient?.nom}
               </Typography>
               {selectedClient?.code_client && (
@@ -1518,21 +1769,21 @@ const Passages = () => {
             <Box sx={{ 
               bgcolor: 'rgba(255, 255, 255, 0.15)', 
               borderRadius: 2, 
-              p: 3, 
+              p: { xs: 2, md: 3 }, 
               mb: 3,
               backdropFilter: 'blur(10px)',
               border: '1px solid rgba(255, 255, 255, 0.2)',
             }}>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 2 }}>
-                <CardGiftcard sx={{ fontSize: 32, color: 'white' }} />
-                <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                <CardGiftcard sx={{ fontSize: { xs: 28, md: 32 }, color: 'white' }} />
+                <Typography variant="h6" sx={{ fontWeight: 600, fontSize: { xs: '1rem', md: '1.25rem' } }}>
                   Passage Gratuit
                 </Typography>
               </Box>
-              <Typography variant="body1" sx={{ mb: 2, lineHeight: 1.6 }}>
+              <Typography variant="body1" sx={{ mb: 2, lineHeight: 1.6, fontSize: { xs: '0.9rem', md: '1rem' } }}>
                 Votre fidélité est récompensée aujourd'hui
               </Typography>
-              <Typography variant="h6" sx={{ fontWeight: 700, color: 'white', letterSpacing: 1 }}>
+              <Typography variant="h6" sx={{ fontWeight: 700, color: 'white', letterSpacing: 1, fontSize: { xs: '1rem', md: '1.25rem' } }}>
                 Ce passage ne vous sera pas facturé
               </Typography>
             </Box>
@@ -1546,10 +1797,10 @@ const Passages = () => {
               gap: 1,
               bgcolor: 'rgba(255, 255, 255, 0.1)',
               borderRadius: 2,
-              p: 2,
+              p: { xs: 1.5, md: 2 },
             }}>
-              <Loyalty sx={{ fontSize: 24 }} />
-              <Typography variant="body1" sx={{ fontWeight: 500 }}>
+              <Loyalty sx={{ fontSize: { xs: 20, md: 24 } }} />
+              <Typography variant="body1" sx={{ fontWeight: 500, fontSize: { xs: '0.9rem', md: '1rem' } }}>
                 Merci pour votre confiance continue
               </Typography>
             </Box>
@@ -1575,11 +1826,12 @@ const Passages = () => {
             onClick={handleCongratulationsConfirm} 
             variant="contained"
             size="large"
+            fullWidth={isMobile}
             sx={{
               bgcolor: 'white',
               color: '#11998e',
               fontWeight: 700,
-              px: 6,
+              px: { xs: 4, md: 6 },
               py: 1.5,
               fontSize: '1rem',
               borderRadius: 2,

@@ -77,6 +77,8 @@ export const passagesAPI = {
   delete: (id) => api.delete(`/passages/${id}`),
   getByClient: (clientId) => api.get(`/passages/client/${clientId}`),
   checkFidelity: (clientId) => api.get(`/passages/client/${clientId}/check-fidelite`),
+  byClient: (clientId) => api.get(`/passages/par-client/${clientId}`),
+  byCoiffeur: (coiffeurId, params) => api.get(`/passages/par-coiffeur/${coiffeurId}`, { params }),
 };
 
 
@@ -106,8 +108,11 @@ export const statsAPI = {
   prestations: (params) => api.get('/statistiques/prestations', { params }),
   fidelity: (params) => api.get('/statistiques/fidelite', { params }),
   dashboard: () => api.get('/statistiques/dashboard'),
+
+  coiffeurs: (params = {}) => api.get('/statistiques/coiffeurs', { params }),
 };
 
+// Users
 // Users
 export const usersAPI = {
   getAll: (params) => api.get('/users', { params }),
@@ -116,6 +121,12 @@ export const usersAPI = {
   update: (id, data) => api.put(`/users/${id}`, data),
   delete: (id) => api.delete(`/users/${id}`),
   toggleActive: (id) => api.post(`/users/${id}/toggle-actif`),
+  // CORRIGEZ ICI
+  getCoiffeurs: (params) => api.get('/users/coiffeurs/liste', { params }),
+  getCoiffeurStats: (id, params) => api.get(`/users/coiffeurs/${id}/statistiques`, { params }),
+  associerPrestation: (id, data) => api.post(`/users/coiffeurs/${id}/prestations`, data),
+  detacherPrestation: (coiffeurId, prestationId) => 
+    api.delete(`/users/coiffeurs/${coiffeurId}/prestations/${prestationId}`),
 };
 
 export default api;
