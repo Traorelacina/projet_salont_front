@@ -1,340 +1,650 @@
-import { dbOperations } from './db';
-import api from './api';
+// services/syncService.js
+import { api, clientsAPI, passagesAPI, paiementsAPI } from './api';
+import { 
+  offlineClients, 
+  offlinePassages, 
+  offlinePaiements,
+  syncQueue 
+} from './offlineStorage';
+import { networkManager } from './networkManager';
 
-const DEVICE_ID = 'device_' + Math.random().toString(36).substr(2, 9);
-
-// Classe pour gérer la synchronisation
 class SyncService {
   constructor() {
     this.isSyncing = false;
-    this.syncInterval = null;
-    this.listeners = [];
+    this.syncListeners = [];
+    this.errorListeners = [];
   }
 
-  // Ajouter un écouteur d'événements de synchronisation
-  addListener(callback) {
-    this.listeners.push(callback);
+  onSyncStart(callback) {
+    this.syncListeners.push(callback);
   }
 
-  // Notifier tous les écouteurs
-  notifyListeners(event) {
-    this.listeners.forEach(callback => callback(event));
+  onSyncError(callback) {
+    this.errorListeners.push(callback);
   }
 
-  // Ajouter une opération à la file d'attente de synchronisation
-  async addToSyncQueue(entityType, action, data, localId = null) {
-    const db = await import('./db').then(m => m.default());
-    const tx = db.transaction('sync_queue', 'readwrite');
-    const store = tx.objectStore('sync_queue');
-    
-    await store.add({
-      entity_type: entityType,
-      action: action,
-      data: data,
-      local_id: localId,
-      created_at: new Date().toISOString(),
-      attempts: 0,
-    });
-    
-    await tx.done;
+  notifySyncStart() {
+    this.syncListeners.forEach(callback => callback());
   }
 
-  // Enregistrer un log de synchronisation
-  async logSync(status, message, details = null) {
-    const db = await import('./db').then(m => m.default());
-    const tx = db.transaction('sync_logs', 'readwrite');
-    const store = tx.objectStore('sync_logs');
-    
-    await store.add({
-      timestamp: new Date().toISOString(),
-      status: status,
-      message: message,
-      details: details,
-    });
-    
-    await tx.done;
-
-    // Nettoyer les anciens logs périodiquement
-    if (Math.random() < 0.1) { // 10% de chance
-      await dbOperations.cleanOldLogs();
-    }
+  notifySyncError(error) {
+    this.errorListeners.forEach(callback => callback(error));
   }
 
-  // Vérifier la connectivité
-  async checkConnectivity() {
-    if (!navigator.onLine) {
-      return false;
-    }
+  async needsSync() {
+    const count = await syncQueue.getCount();
+    return count > 0;
+  }
+
+  // ✅ CORRECTION : Synchroniser un client avec vérification par code_client
+  async syncClient(queueItem) {
+    const { action, data, temp_id, local_id, server_id } = queueItem;
 
     try {
-      const response = await api.get('/ping', { timeout: 5000 });
-      return response.status === 200;
+      if (action === 'create') {
+        // ✅ ÉTAPE 1 : Récupérer le client local pour avoir son code_client
+        const localClient = await offlineClients.getById(local_id);
+        
+        if (!localClient) {
+          throw new Error(`Client local non trouvé (ID: ${local_id})`);
+        }
+
+        let existingClientId = null;
+        
+        // ✅ ÉTAPE 2 : Vérifier si un client avec ce code_client existe déjà sur le serveur
+        if (localClient.code_client) {
+          try {
+            // Rechercher par code_client
+            const searchResponse = await clientsAPI.getAll({ 
+              search: localClient.code_client 
+            });
+            
+            const existing = searchResponse.data?.data?.data?.find(
+              client => client.code_client === localClient.code_client
+            );
+            
+            if (existing) {
+              console.log('✅ Client existe déjà sur serveur (par code_client):', existing.id);
+              existingClientId = existing.id;
+            }
+          } catch (searchError) {
+            console.log('ℹ️ Recherche par code_client échouée:', searchError);
+          }
+        }
+        
+        // ✅ ÉTAPE 3 : Si client existe déjà, juste associer
+        if (existingClientId) {
+          // Mettre à jour le client local avec les données du serveur
+          try {
+            const serverResponse = await clientsAPI.getById(existingClientId);
+            const serverClient = serverResponse.data.data;
+            
+            // Mettre à jour le client local
+            const updatedClient = {
+              ...localClient,
+              ...serverClient,
+              id: localClient.id,
+              server_id: serverClient.id,
+              synced: true,
+              offline_created: false,
+              updated_at: new Date().toISOString(),
+            };
+            
+            // ✅ CORRECTION : Utiliser la méthode update de offlineClients
+            await offlineClients.update(local_id, {
+              server_id: serverClient.id,
+              synced: true,
+              offline_created: false,
+              code_client: serverClient.code_client,
+              updated_at: new Date().toISOString(),
+            });
+            
+            return {
+              success: true,
+              local_id,
+              server_id: existingClientId,
+              warning: 'Client existant détecté - associé à l\'enregistrement existant',
+              message: 'Client associé à un enregistrement existant sur le serveur',
+            };
+          } catch (updateError) {
+            console.error('❌ Erreur mise à jour client local:', updateError);
+            // Continuer avec une création normale
+          }
+        }
+        
+        // ✅ ÉTAPE 4 : Si client n'existe pas, le créer
+        // Validation avant envoi
+        if (!data.nom || !data.prenom) {
+          throw new Error('Nom et prénom requis');
+        }
+
+        const clientData = {
+          nom: data.nom.trim(),
+          prenom: data.prenom.trim(),
+        };
+
+        // Gérer le téléphone optionnel
+        if (data.telephone && data.telephone.trim()) {
+          clientData.telephone = data.telephone.trim();
+        }
+
+        console.log('📤 Synchronisation client:', clientData);
+        const response = await clientsAPI.create(clientData);
+
+        if (response.data.success) {
+          const serverClient = response.data.data;
+          console.log('✅ Client synchronisé sur serveur:', serverClient.id);
+          
+          // Mettre à jour le client local avec le server_id
+          await offlineClients.update(local_id, {
+            server_id: serverClient.id,
+            synced: true,
+            offline_created: false,
+            code_client: serverClient.code_client,
+            updated_at: new Date().toISOString(),
+          });
+          
+          return {
+            success: true,
+            local_id,
+            server_id: serverClient.id,
+            message: 'Client synchronisé avec succès',
+          };
+        }
+      } else if (action === 'update') {
+        const response = await clientsAPI.update(server_id, {
+          nom: data.nom?.trim(),
+          prenom: data.prenom?.trim(),
+          telephone: data.telephone?.trim() || null,
+        });
+
+        if (response.data.success) {
+          await offlineClients.update(local_id, {
+            synced: true,
+            offline_created: false,
+            updated_at: new Date().toISOString(),
+          });
+          
+          return {
+            success: true,
+            message: 'Client mis à jour avec succès',
+          };
+        }
+      } else if (action === 'delete') {
+        console.log('🗑️ Synchronisation suppression client:', server_id);
+        
+        try {
+          const response = await clientsAPI.delete(server_id);
+          
+          if (response.data.success) {
+            console.log('✅ Client supprimé sur serveur:', server_id);
+            return {
+              success: true,
+              message: response.data.message || 'Client supprimé avec succès',
+            };
+          }
+        } catch (error) {
+          if (error.response?.status === 404) {
+            console.log('⚠️ Client déjà supprimé sur le serveur');
+            return {
+              success: true,
+              message: 'Client déjà supprimé sur le serveur',
+            };
+          }
+          throw error;
+        }
+      }
     } catch (error) {
-      return false;
+      console.error('❌ Erreur synchronisation client:', error);
+      
+      // Gestion spéciale des erreurs 422 (validation)
+      if (error.response?.status === 422) {
+        const errors = error.response?.data?.errors;
+        
+        if (errors?.telephone) {
+          console.warn('⚠️ Téléphone dupliqué');
+          
+          // Si téléphone dupliqué, essayer sans téléphone
+          try {
+            const clientData = {
+              nom: data.nom?.trim(),
+              prenom: data.prenom?.trim(),
+              // Pas de téléphone
+            };
+            
+            const response = await clientsAPI.create(clientData);
+            
+            if (response.data.success) {
+              const serverClient = response.data.data;
+              
+              await offlineClients.update(local_id, {
+                server_id: serverClient.id,
+                synced: true,
+                offline_created: false,
+                code_client: serverClient.code_client,
+                updated_at: new Date().toISOString(),
+              });
+              
+              return {
+                success: true,
+                local_id,
+                server_id: serverClient.id,
+                warning: 'Téléphone dupliqué - créé sans téléphone',
+                message: 'Client synchronisé sans téléphone (dupliqué détecté)',
+              };
+            }
+          } catch (retryError) {
+            console.error('❌ Échec même sans téléphone:', retryError);
+          }
+        }
+      }
+      
+      throw error;
     }
   }
 
-  // Synchronisation complète (push + pull)
-  async sync() {
+  // Synchroniser un passage
+  async syncPassage(queueItem) {
+    const { action, data, temp_id, local_id, server_id } = queueItem;
+
+    try {
+      if (action === 'create') {
+        // Vérifier que client_id existe
+        if (!data.client_id) {
+          console.error('❌ client_id manquant dans les données de passage:', data);
+          throw new Error('client_id est requis pour créer un passage');
+        }
+
+        // Récupérer le client local
+        const localClient = await offlineClients.getById(data.client_id);
+        
+        if (!localClient) {
+          console.error('❌ Client local non trouvé:', data.client_id);
+          throw new Error(`Client local ${data.client_id} non trouvé`);
+        }
+
+        // Utiliser le server_id du client
+        const clientServerId = localClient.server_id;
+        
+        if (!clientServerId) {
+          throw new Error('Le client n\'a pas encore été synchronisé avec le serveur');
+        }
+
+        // Valider les prestations
+        if (!data.prestations || data.prestations.length === 0) {
+          throw new Error('Au moins une prestation est requise');
+        }
+
+        // Normaliser les prestations
+        const normalizedPrestations = data.prestations.map(p => {
+          const prestationId = p.id || p.prestation_id;
+          
+          if (!prestationId) {
+            throw new Error('Chaque prestation doit avoir un ID');
+          }
+
+          return {
+            id: prestationId,
+            prestation_id: prestationId,
+            quantite: p.quantite || 1,
+            prix_unitaire: p.prix_unitaire || p.prix_applique || 0,
+            coiffeur_id: p.coiffeur_id || null,
+          };
+        });
+
+        const passageData = {
+          client_id: clientServerId,
+          date_passage: data.date_passage || new Date().toISOString(),
+          est_gratuit: data.est_gratuit || false,
+          montant_total: data.montant_total || 0,
+          prestations: normalizedPrestations,
+          notes: data.notes || '',
+        };
+
+        console.log('📤 Synchronisation passage:', passageData);
+        const response = await passagesAPI.create(passageData);
+
+        if (response.data.success) {
+          const serverPassage = response.data.data;
+          console.log('✅ Passage créé sur serveur:', serverPassage.id);
+          
+          await offlinePassages.markAsSynced(local_id, serverPassage.id);
+          
+          // Synchroniser le paiement si nécessaire
+          if (!data.est_gratuit) {
+            let paiementLocal = null;
+            try {
+              paiementLocal = await offlinePaiements.getByPassageId(local_id);
+            } catch (e) {
+              console.log('ℹ️ Pas de paiement local trouvé');
+            }
+
+            if (paiementLocal) {
+              try {
+                console.log('📤 Synchronisation paiement pour passage:', serverPassage.id);
+                
+                const montantPaye = paiementLocal.montant_paye || paiementLocal.montant;
+                
+                if (!montantPaye || montantPaye <= 0) {
+                  console.error('❌ Montant paiement invalide:', paiementLocal);
+                  throw new Error('Montant de paiement invalide');
+                }
+
+                const paiementData = {
+                  passage_id: serverPassage.id,
+                  montant_paye: parseFloat(montantPaye),
+                  mode_paiement: paiementLocal.mode_paiement || 'especes',
+                  date_paiement: paiementLocal.date_paiement || new Date().toISOString(),
+                  notes: paiementLocal.notes || '',
+                };
+
+                console.log('💰 Données paiement:', paiementData);
+                const paiementResponse = await paiementsAPI.create(paiementData);
+                
+                if (paiementResponse.data.success) {
+                  console.log('✅ Paiement synchronisé:', paiementResponse.data.data.id);
+                  await offlinePaiements.markAsSynced(paiementLocal.id, paiementResponse.data.data.id);
+                }
+              } catch (paiementError) {
+                console.error('❌ Erreur synchronisation paiement:', paiementError);
+                // Ne pas bloquer la sync du passage
+              }
+            }
+          }
+          
+          return {
+            success: true,
+            local_id,
+            server_id: serverPassage.id,
+            message: 'Passage synchronisé avec succès',
+          };
+        }
+      } else if (action === 'update') {
+        const response = await passagesAPI.update(server_id, {
+          date_passage: data.date_passage,
+          est_gratuit: data.est_gratuit,
+          montant_total: data.montant_total,
+          prestations: data.prestations,
+          notes: data.notes,
+        });
+
+        if (response.data.success) {
+          await offlinePassages.markAsSynced(local_id, server_id);
+          
+          return {
+            success: true,
+            message: 'Passage mis à jour avec succès',
+          };
+        }
+      } else if (action === 'delete') {
+        console.log('🗑️ Synchronisation suppression passage:', server_id);
+        
+        const response = await passagesAPI.delete(server_id);
+        
+        if (response.data.success) {
+          console.log('✅ Passage supprimé sur serveur:', server_id);
+          
+          return {
+            success: true,
+            message: 'Passage supprimé avec succès',
+          };
+        }
+      }
+    } catch (error) {
+      console.error('❌ Erreur synchronisation passage:', error);
+      
+      if (action === 'delete' && error.response?.status === 404) {
+        console.log('⚠️ Passage déjà supprimé sur le serveur');
+        return {
+          success: true,
+          message: 'Passage déjà supprimé sur le serveur',
+        };
+      }
+      
+      throw error;
+    }
+  }
+
+  // Synchroniser un paiement
+  async syncPaiement(queueItem) {
+    const { action, data, temp_id, local_id, server_id } = queueItem;
+
+    try {
+      if (action === 'create') {
+        const localPassage = await offlinePassages.getById(data.passage_id);
+        const passageServerId = localPassage?.server_id || data.passage_id;
+
+        const paiementData = {
+          passage_id: passageServerId,
+          montant_paye: parseFloat(data.montant_paye || data.montant),
+          mode_paiement: data.mode_paiement || 'especes',
+          date_paiement: data.date_paiement || new Date().toISOString(),
+          notes: data.notes || '',
+        };
+
+        console.log('📤 Synchronisation paiement individuel:', paiementData);
+        const response = await paiementsAPI.create(paiementData);
+
+        if (response.data.success) {
+          const serverPaiement = response.data.data;
+          console.log('✅ Paiement créé sur serveur:', serverPaiement.id);
+          
+          await offlinePaiements.markAsSynced(local_id, serverPaiement.id);
+          
+          return {
+            success: true,
+            local_id,
+            server_id: serverPaiement.id,
+            message: 'Paiement synchronisé avec succès',
+          };
+        }
+      } else if (action === 'delete') {
+        console.log('🗑️ Synchronisation suppression paiement:', server_id);
+        
+        const response = await paiementsAPI.delete(server_id);
+        
+        if (response.data.success) {
+          console.log('✅ Paiement supprimé sur serveur:', server_id);
+          
+          return {
+            success: true,
+            message: 'Paiement supprimé avec succès',
+          };
+        }
+      }
+    } catch (error) {
+      console.error('❌ Erreur synchronisation paiement:', error);
+      
+      if (action === 'delete' && error.response?.status === 404) {
+        console.log('⚠️ Paiement déjà supprimé sur le serveur');
+        return {
+          success: true,
+          message: 'Paiement déjà supprimé sur le serveur',
+        };
+      }
+      
+      throw error;
+    }
+  }
+
+  // Synchroniser un élément de la file
+  async syncQueueItem(queueItem) {
+    const { entity, action } = queueItem;
+
+    await syncQueue.markAsProcessing(queueItem.id);
+
+    try {
+      let result;
+
+      switch (entity) {
+        case 'clients':
+          result = await this.syncClient(queueItem);
+          break;
+        case 'passages':
+          result = await this.syncPassage(queueItem);
+          break;
+        case 'paiements':
+          result = await this.syncPaiement(queueItem);
+          break;
+        default:
+          throw new Error(`Type d'entité non supporté: ${entity}`);
+      }
+
+      await syncQueue.markAsSynced(queueItem.id);
+
+      return result;
+    } catch (error) {
+      await syncQueue.markAsFailed(queueItem.id, error.message);
+      throw error;
+    }
+  }
+
+  // Synchroniser toutes les données en attente
+  async syncAll() {
     if (this.isSyncing) {
-      console.log('Synchronisation déjà en cours');
-      return;
+      console.log('⏳ Synchronisation déjà en cours');
+      return {
+        success: false,
+        message: 'Synchronisation déjà en cours',
+      };
     }
 
-    const isOnline = await this.checkConnectivity();
-    if (!isOnline) {
-      console.log('Mode hors ligne - synchronisation différée');
-      this.notifyListeners({ type: 'offline' });
-      return;
+    if (!networkManager.getStatus()) {
+      console.log('📵 Impossible de synchroniser - hors ligne');
+      return {
+        success: false,
+        message: 'Pas de connexion internet',
+      };
     }
 
     this.isSyncing = true;
-    this.notifyListeners({ type: 'sync_start' });
+    this.notifySyncStart();
 
-    try {
-      // 1. Pousser les modifications locales vers le serveur
-      await this.pushLocalChanges();
-
-      // 2. Récupérer les mises à jour du serveur
-      await this.pullServerUpdates();
-
-      await this.logSync('success', 'Synchronisation réussie');
-      this.notifyListeners({ type: 'sync_success' });
-    } catch (error) {
-      console.error('Erreur de synchronisation:', error);
-      await this.logSync('error', 'Erreur de synchronisation', error.message);
-      this.notifyListeners({ type: 'sync_error', error });
-    } finally {
-      this.isSyncing = false;
-      this.notifyListeners({ type: 'sync_end' });
-    }
-  }
-
-  // Pousser les modifications locales vers le serveur
-  async pushLocalChanges() {
-    const db = await import('./db').then(m => m.default());
-    const tx = db.transaction('sync_queue', 'readonly');
-    const store = tx.objectStore('sync_queue');
-    const queue = await store.getAll();
-    await tx.done;
-
-    if (queue.length === 0) {
-      console.log('Aucune modification locale à synchroniser');
-      return;
-    }
-
-    // Regrouper les opérations par type d'entité
-    const groupedOperations = {
-      clients: [],
-      prestations: [],
-      passages: [],
-      paiements: [],
+    const results = {
+      success: [],
+      failed: [],
+      total: 0,
     };
 
-    for (const item of queue) {
-      if (groupedOperations[item.entity_type]) {
-        groupedOperations[item.entity_type].push({
-          local_id: item.local_id,
-          action: item.action,
-          ...item.data,
-        });
-      }
-    }
-
-    // Envoyer les données au serveur via l'endpoint batch
     try {
-      const response = await api.post('/sync/batch', {
-        device_id: DEVICE_ID,
-        data: groupedOperations,
+      const pendingItems = await syncQueue.getPending();
+      results.total = pendingItems.length;
+
+      if (pendingItems.length === 0) {
+        this.isSyncing = false;
+        return {
+          success: true,
+          message: 'Aucune donnée à synchroniser',
+          results,
+        };
+      }
+
+      console.log(`🔄 Synchronisation de ${pendingItems.length} élément(s)...`);
+
+      // Trier par ordre de dépendance
+      const sortedItems = pendingItems.sort((a, b) => {
+        const entityOrder = { clients: 1, passages: 2, paiements: 3 };
+        const entityDiff = (entityOrder[a.entity] || 999) - (entityOrder[b.entity] || 999);
+        
+        if (entityDiff !== 0) return entityDiff;
+        
+        const actionOrder = { create: 1, update: 2, delete: 3 };
+        return (actionOrder[a.action] || 999) - (actionOrder[b.action] || 999);
       });
 
-      if (response.data.success) {
-        const results = response.data.data;
-
-        // Traiter les résultats et mettre à jour IndexedDB
-        await this.processServerResults(results, queue);
-
-        // Nettoyer la file d'attente
-        await this.clearSyncQueue(queue.map(item => item.id));
-
-        console.log('Modifications locales envoyées avec succès');
-      }
-    } catch (error) {
-      console.error('Erreur lors de l\'envoi des modifications:', error);
-      throw error;
-    }
-  }
-
-  // Traiter les résultats du serveur
-  async processServerResults(results, queue) {
-    for (const [entityType, items] of Object.entries(results)) {
-      for (const item of items) {
-        if (item.status === 'succes') {
-          // Mettre à jour l'enregistrement local avec l'ID serveur
-          if (item.local_id) {
-            await dbOperations.markAsSynced(
-              entityType,
-              item.local_id,
-              item.server_id
-            );
-          }
-        } else if (item.status === 'conflit') {
-          // Gérer les conflits (pour l'instant, on prend la version serveur)
-          console.warn('Conflit détecté:', item);
-          await this.logSync('warning', `Conflit pour ${entityType}`, item);
-        } else if (item.status === 'echec') {
-          console.error('Échec de synchronisation:', item);
-          await this.logSync('error', `Échec pour ${entityType}`, item.message);
-        }
-      }
-    }
-  }
-
-  // Nettoyer la file d'attente de synchronisation
-  async clearSyncQueue(ids) {
-    const db = await import('./db').then(m => m.default());
-    const tx = db.transaction('sync_queue', 'readwrite');
-    const store = tx.objectStore('sync_queue');
-
-    for (const id of ids) {
-      await store.delete(id);
-    }
-
-    await tx.done;
-  }
-
-  // Récupérer les mises à jour du serveur
-  async pullServerUpdates() {
-    try {
-      // Récupérer le timestamp de la dernière synchronisation
-      const lastSync = localStorage.getItem('last_sync_timestamp') || new Date(0).toISOString();
-
-      const response = await api.get('/sync/pull', {
-        params: { timestamp: lastSync },
-      });
-
-      if (response.data.success) {
-        const { clients, prestations, passages, paiements } = response.data.data;
-
-        // Mettre à jour IndexedDB avec les données du serveur
-        await this.updateLocalData('clients', clients);
-        await this.updateLocalData('prestations', prestations);
-        await this.updateLocalData('passages', passages);
-        await this.updateLocalData('paiements', paiements);
-
-        // Mettre à jour le timestamp de synchronisation
-        localStorage.setItem('last_sync_timestamp', response.data.timestamp);
-
-        console.log('Mises à jour serveur récupérées avec succès');
-      }
-    } catch (error) {
-      console.error('Erreur lors de la récupération des mises à jour:', error);
-      throw error;
-    }
-  }
-
-  // Mettre à jour les données locales avec les données du serveur
-  async updateLocalData(storeName, data) {
-    if (!data || data.length === 0) {
-      return;
-    }
-
-    for (const item of data) {
-      // Vérifier si l'enregistrement existe déjà
-      const existing = await dbOperations.get(storeName, item.id);
-
-      if (existing) {
-        // Comparer les timestamps pour éviter d'écraser des données plus récentes
-        const serverTime = new Date(item.synced_at || item.updated_at);
-        const localTime = new Date(existing.updated_at);
-
-        if (serverTime > localTime) {
-          await dbOperations.put(storeName, {
-            ...item,
-            synced: true,
-            synced_at: item.synced_at,
+      // Synchroniser chaque élément
+      for (const item of sortedItems) {
+        try {
+          console.log(`🔄 Sync ${item.entity} - ${item.action}...`);
+          
+          const result = await this.syncQueueItem(item);
+          
+          results.success.push({
+            id: item.id,
+            entity: item.entity,
+            action: item.action,
+            result,
           });
+          
+          console.log(`✅ Synchronisé: ${item.entity} - ${item.action}`);
+        } catch (error) {
+          results.failed.push({
+            id: item.id,
+            entity: item.entity,
+            action: item.action,
+            error: error.message,
+            details: error.response?.data,
+          });
+          
+          console.error(`❌ Échec: ${item.entity} - ${item.action}`, error);
+          
+          if (error.response?.status === 401 || error.response?.status === 403) {
+            console.error('🔐 Erreur d\'authentification - arrêt de la synchronisation');
+            break;
+          }
         }
-      } else {
-        // Nouvel enregistrement du serveur
-        await dbOperations.put(storeName, {
-          ...item,
-          synced: true,
-          synced_at: item.synced_at,
-        });
       }
+
+      this.isSyncing = false;
+
+      return {
+        success: true,
+        message: `Synchronisation terminée: ${results.success.length} réussie(s), ${results.failed.length} échouée(s)`,
+        results,
+      };
+    } catch (error) {
+      this.isSyncing = false;
+      this.notifySyncError(error);
+      
+      console.error('❌ Erreur lors de la synchronisation:', error);
+      
+      return {
+        success: false,
+        message: 'Erreur lors de la synchronisation',
+        error: error.message,
+        results,
+      };
     }
   }
 
-  // Démarrer la synchronisation automatique
+  // Synchronisation automatique périodique
   startAutoSync(intervalMinutes = 5) {
-    if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-    }
-
-    // Synchroniser immédiatement
-    this.sync();
-
-    // Puis toutes les X minutes
-    this.syncInterval = setInterval(() => {
-      this.sync();
-    }, intervalMinutes * 60 * 1000);
-
-    // Synchroniser lors du retour de connexion
-    window.addEventListener('online', () => {
-      console.log('Connexion rétablie - synchronisation...');
-      this.sync();
-    });
-  }
-
-  // Arrêter la synchronisation automatique
-  stopAutoSync() {
-    if (this.syncInterval) {
-      clearInterval(this.syncInterval);
-      this.syncInterval = null;
-    }
-  }
-
-  // Obtenir les statistiques de synchronisation
-  async getSyncStats() {
-    const db = await import('./db').then(m => m.default());
+    const intervalMs = intervalMinutes * 60 * 1000;
     
-    // Compter les enregistrements non synchronisés
-    const unsyncedClients = await dbOperations.getUnsyncedRecords('clients');
-    const unsyncedPrestations = await dbOperations.getUnsyncedRecords('prestations');
-    const unsyncedPassages = await dbOperations.getUnsyncedRecords('passages');
-    const unsyncedPaiements = await dbOperations.getUnsyncedRecords('paiements');
+    const autoSyncInterval = setInterval(async () => {
+      if (networkManager.getStatus() && await this.needsSync()) {
+        console.log('🔄 Auto-synchronisation déclenchée...');
+        await this.syncAll();
+      }
+    }, intervalMs);
 
-    // Récupérer la file d'attente
-    const tx = db.transaction('sync_queue', 'readonly');
-    const queue = await tx.objectStore('sync_queue').getAll();
-    await tx.done;
+    return () => clearInterval(autoSyncInterval);
+  }
 
-    // Récupérer les derniers logs
-    const logsTx = db.transaction('sync_logs', 'readonly');
-    const logsIndex = logsTx.objectStore('sync_logs').index('timestamp');
-    const logs = await logsIndex.getAll();
-    await logsTx.done;
-
-    const recentLogs = logs.slice(-10).reverse();
-
+  // Synchroniser immédiatement si possible
+  async trySyncNow() {
+    if (networkManager.getStatus() && !this.isSyncing) {
+      return await this.syncAll();
+    }
     return {
-      unsynced: {
-        clients: unsyncedClients.length,
-        prestations: unsyncedPrestations.length,
-        passages: unsyncedPassages.length,
-        paiements: unsyncedPaiements.length,
-        total: unsyncedClients.length + unsyncedPrestations.length + 
-               unsyncedPassages.length + unsyncedPaiements.length,
-      },
-      queueSize: queue.length,
-      lastSync: localStorage.getItem('last_sync_timestamp'),
-      recentLogs: recentLogs,
+      success: false,
+      message: this.isSyncing ? 'Synchronisation en cours' : 'Hors ligne',
+    };
+  }
+
+  // Obtenir le statut de synchronisation
+  async getSyncStatus() {
+    const pendingCount = await syncQueue.getCount();
+    
+    return {
+      isSyncing: this.isSyncing,
+      pendingCount,
+      isOnline: networkManager.getStatus(),
     };
   }
 }
 
 // Instance singleton
-const syncService = new SyncService();
+export const syncService = new SyncService();
 
 export default syncService;

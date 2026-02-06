@@ -52,7 +52,6 @@ import {
   PersonAdd,
   Phone,
   ShoppingCart,
-  Payment,
   Person,
   AttachMoney,
   CreditCard,
@@ -61,20 +60,26 @@ import {
   CheckCircle,
   Error as ErrorIcon,
   ArrowForward,
-  Download,
   Receipt,
   Remove,
   PercentOutlined,
-  ReceiptLong,
   Loyalty,
   ContentCut,
   Close,
   Warning,
+  CloudOff,
+  CloudDone,
+  WifiOff,
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
-import { passagesAPI, clientsAPI, prestationsAPI, paiementsAPI, usersAPI } from '../services/api';
+import { prestationsAPI, usersAPI } from '../services/api';
+import { useOfflineClient } from '../hooks/useOfflineClient';
+import { useOfflinePassage } from '../hooks/useOfflinePassage';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
+import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
+// ✅ AJOUTER les imports manquants
+import { networkManager } from '../services/networkManager';
+import { syncService } from '../services/syncService';
 
 // Composant optimisé pour la ligne de résultat de recherche client
 const ClientSearchItem = React.memo(({ client, onSelect }) => (
@@ -91,18 +96,20 @@ const ClientSearchItem = React.memo(({ client, onSelect }) => (
     <Person sx={{ mr: 2, color: 'primary.main' }} />
     <ListItemText
       primary={
-        <Typography variant="body1" sx={{ fontWeight: 600 }}>
-          {client.prenom} {client.nom}
+        <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="body1" component="span" sx={{ fontWeight: 600 }}>
+            {client.prenom} {client.nom}
+          </Typography>
           {client.code_client && (
             <Chip 
               label={client.code_client} 
               size="small" 
-              sx={{ ml: 1, fontWeight: 600 }}
+              sx={{ fontWeight: 600 }}
               variant="outlined"
               color="primary"
             />
           )}
-        </Typography>
+        </Box>
       }
       secondary={
         <>
@@ -132,7 +139,7 @@ const ClientSearchItem = React.memo(({ client, onSelect }) => (
 
 ClientSearchItem.displayName = 'ClientSearchItem';
 
-// Composant optimisé pour la ligne de prestation avec contrôle de quantité ET sélection de coiffeur
+// Composant optimisé pour la ligne de prestation
 const PrestationRow = React.memo(({ 
   prestation, 
   selected, 
@@ -273,7 +280,7 @@ const PrestationRow = React.memo(({
 
 PrestationRow.displayName = 'PrestationRow';
 
-// Composant pour l'animation de redirection améliorée
+// Composant pour l'animation de redirection
 const RedirectAnimation = () => {
   const [step, setStep] = useState(0);
 
@@ -332,13 +339,13 @@ const RedirectAnimation = () => {
 
           <Fade in={step >= 0} timeout={600}>
             <Typography variant="h5" sx={{ fontWeight: 700, mb: 1, color: 'primary.main' }}>
-              Paiement enregistré !
+              Passage enregistré !
             </Typography>
           </Fade>
 
           <Fade in={step >= 1} timeout={600}>
             <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-              Préparation du reçu en cours...
+              {step >= 2 ? 'Données sauvegardées avec succès' : 'Enregistrement en cours...'}
             </Typography>
           </Fade>
 
@@ -346,16 +353,7 @@ const RedirectAnimation = () => {
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 2 }}>
               <Receipt sx={{ color: 'primary.main', animation: 'bounce 1s infinite' }} />
               <Typography variant="body2" sx={{ fontWeight: 600, color: 'primary.main' }}>
-                Génération du reçu
-              </Typography>
-            </Box>
-          </Fade>
-
-          <Fade in={step >= 3} timeout={600}>
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
-              <ArrowForward sx={{ animation: 'slideRight 1.5s infinite' }} />
-              <Typography variant="body2" color="success.main" sx={{ fontWeight: 600 }}>
-                Ouverture de la fenêtre d'impression
+                Traitement terminé
               </Typography>
             </Box>
           </Fade>
@@ -364,11 +362,6 @@ const RedirectAnimation = () => {
       
       <style>
         {`
-          @keyframes slideRight {
-            0% { transform: translateX(-10px); opacity: 0.5; }
-            50% { transform: translateX(10px); opacity: 1; }
-            100% { transform: translateX(-10px); opacity: 0.5; }
-          }
           @keyframes bounce {
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-10px); }
@@ -380,10 +373,23 @@ const RedirectAnimation = () => {
 };
 
 const Passages = () => {
-  const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const isTablet = useMediaQuery(theme.breakpoints.down('md'));
+  
+  // Hooks hors ligne
+  const { 
+    isOnline, 
+    createClient, 
+    searchClients,
+  } = useOfflineClient();
+  
+  const {
+    createPassage,
+    getAllPassages,
+    deletePassage,
+    checkFidelity,
+  } = useOfflinePassage();
   
   const [passages, setPassages] = useState([]);
   const [prestations, setPrestations] = useState([]);
@@ -395,7 +401,6 @@ const Passages = () => {
     page: 0,
     pageSize: 10,
   });
-  const [rowCount, setRowCount] = useState(0);
 
   // États pour la recherche et sélection de client
   const [searchQuery, setSearchQuery] = useState('');
@@ -448,6 +453,23 @@ const Passages = () => {
   // Ref pour le debounce
   const searchTimeoutRef = useRef(null);
 
+  // ✅ CORRECTION : Synchronisation automatique
+  useEffect(() => {
+    // Synchroniser automatiquement quand on revient en ligne
+    const unsubscribe = networkManager.subscribe((online) => {
+      if (online) {
+        // Attendre 2 secondes que la connexion soit stable
+        setTimeout(() => {
+          syncService.trySyncNow().catch(err => 
+            console.log('ℹ️ Sync automatique échouée:', err)
+          );
+        }, 2000);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   // Afficher une notification
   const showNotification = useCallback((message, severity = 'success') => {
     setNotification({
@@ -466,24 +488,74 @@ const Passages = () => {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [passagesRes, prestationsRes, coiffeursRes] = await Promise.all([
-        passagesAPI.getAll({
-          page: paginationModel.page + 1,
-          per_page: paginationModel.pageSize,
-        }),
-        prestationsAPI.getAll({ actif: true }),
-        usersAPI.getCoiffeurs({ with_prestations: false }),
-      ]);
+      
+      // Charger les passages (en ligne ou hors ligne)
+      const passagesResult = await getAllPassages({
+        page: paginationModel.page + 1,
+        per_page: paginationModel.pageSize,
+      });
 
-      const passagesData = passagesRes.data.data?.data || passagesRes.data.data || [];
-      setPassages(passagesData);
-      setRowCount(passagesRes.data.data?.total || 0);
+      if (passagesResult.success) {
+        setPassages(passagesResult.data);
+        
+        if (passagesResult.offline) {
+          showNotification('Données chargées en mode hors ligne', 'info');
+        }
+      }
 
-      const prestationsData = prestationsRes.data.data?.data || prestationsRes.data.data || [];
-      setPrestations(prestationsData);
+      // Charger les prestations et coiffeurs (avec support hors ligne)
+      try {
+        if (isOnline) {
+          // Mode en ligne - charger depuis le serveur
+          const [prestationsRes, coiffeursRes] = await Promise.all([
+            prestationsAPI.getAll({ actif: true }),
+            usersAPI.getCoiffeurs({ with_prestations: false }),
+          ]);
 
-      const coiffeursData = coiffeursRes.data.data?.data || coiffeursRes.data.data || [];
-      setCoiffeurs(coiffeursData);
+          const prestationsData = prestationsRes.data.data?.data || prestationsRes.data.data || [];
+          const coiffeursData = coiffeursRes.data.data?.data || coiffeursRes.data.data || [];
+          
+          setPrestations(prestationsData);
+          setCoiffeurs(coiffeursData);
+
+          // Mettre en cache localement pour utilisation hors ligne
+          const { offlinePrestations, offlineCoiffeurs } = await import('../services/offlineStorage');
+          await offlinePrestations.cacheAll(prestationsData);
+          await offlineCoiffeurs.cacheAll(coiffeursData);
+        } else {
+          // Mode hors ligne - charger depuis le cache local
+          const { offlinePrestations, offlineCoiffeurs } = await import('../services/offlineStorage');
+          const [localPrestations, localCoiffeurs] = await Promise.all([
+            offlinePrestations.getActive(),
+            offlineCoiffeurs.getAll(),
+          ]);
+
+          setPrestations(localPrestations);
+          setCoiffeurs(localCoiffeurs);
+          
+          if (localPrestations.length === 0) {
+            showNotification('Aucune prestation en cache - veuillez vous connecter', 'warning');
+          }
+        }
+      } catch (error) {
+        console.error('Error loading prestations/coiffeurs:', error);
+        // En cas d'erreur, essayer de charger depuis le cache
+        try {
+          const { offlinePrestations, offlineCoiffeurs } = await import('../services/offlineStorage');
+          const [localPrestations, localCoiffeurs] = await Promise.all([
+            offlinePrestations.getActive(),
+            offlineCoiffeurs.getAll(),
+          ]);
+
+          setPrestations(localPrestations);
+          setCoiffeurs(localCoiffeurs);
+          
+          showNotification('Prestations chargées depuis le cache local', 'info');
+        } catch (cacheError) {
+          console.error('Error loading from cache:', cacheError);
+          showNotification('Erreur lors du chargement des prestations', 'error');
+        }
+      }
 
       setError('');
     } catch (error) {
@@ -493,13 +565,13 @@ const Passages = () => {
     } finally {
       setLoading(false);
     }
-  }, [paginationModel.page, paginationModel.pageSize, showNotification]);
+  }, [paginationModel.page, paginationModel.pageSize, isOnline, getAllPassages, showNotification]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // Recherche de clients optimisée
+  // Recherche de clients optimisée avec support hors ligne
   const handleSearchClient = useCallback(async (query) => {
     if (!query.trim()) {
       setSearchResults([]);
@@ -508,29 +580,22 @@ const Passages = () => {
 
     try {
       setSearching(true);
-      const response = await clientsAPI.getAll({ search: query });
+      const result = await searchClients(query);
       
-      const clientsData = response.data.data?.data || response.data.data || [];
-      
-      const filteredClients = clientsData.filter(client => {
-        const fullName = `${client.prenom} ${client.nom}`.toLowerCase();
-        const searchLower = query.toLowerCase();
+      if (result.success) {
+        setSearchResults(result.data);
         
-        return fullName.includes(searchLower) ||
-               client.nom.toLowerCase().includes(searchLower) ||
-               client.prenom.toLowerCase().includes(searchLower) ||
-               (client.telephone && client.telephone.includes(query)) ||
-               client.code_client?.toLowerCase().includes(searchLower);
-      });
-      
-      setSearchResults(filteredClients);
+        if (result.offline) {
+          showNotification('Recherche effectuée en mode hors ligne', 'info');
+        }
+      }
     } catch (error) {
       console.error('Error searching client:', error);
       showNotification('Erreur lors de la recherche du client', 'error');
     } finally {
       setSearching(false);
     }
-  }, [showNotification]);
+  }, [searchClients, showNotification]);
 
   // Debounce de la recherche
   useEffect(() => {
@@ -561,15 +626,16 @@ const Passages = () => {
     setOpenDialog(true);
     
     // Charger les informations de fidélité
-    passagesAPI.checkFidelity(client.id)
-      .then(response => setFidelityInfo(response.data.data))
-      .catch(error => {
-        console.error('Error checking fidelity:', error);
-        showNotification('Erreur lors de la vérification de la fidélité', 'error');
-      });
-  }, [showNotification]);
+    try {
+      const fidelityResult = await checkFidelity(client.id);
+      setFidelityInfo(fidelityResult);
+    } catch (error) {
+      console.error('Error checking fidelity:', error);
+      showNotification('Erreur lors de la vérification de la fidélité', 'error');
+    }
+  }, [checkFidelity, showNotification]);
 
-  // Créer un nouveau client
+  // Créer un nouveau client avec support hors ligne
   const handleCreateClient = useCallback(async () => {
     if (!newClientData.nom || !newClientData.prenom) {
       setError('Le nom et le prénom sont obligatoires');
@@ -586,15 +652,20 @@ const Passages = () => {
         dataToSend.telephone = newClientData.telephone.trim();
       }
 
-      const response = await clientsAPI.create(dataToSend);
-      const newClient = response.data.data;
+      const result = await createClient(dataToSend);
       
-      setShowNewClientForm(false);
-      setNewClientData({ nom: '', prenom: '', telephone: '' });
-      setError('');
-      
-      showNotification(`Client ${newClient.prenom} ${newClient.nom} créé avec succès (${newClient.code_client})`);
-      handleSelectClient(newClient);
+      if (result.success) {
+        setShowNewClientForm(false);
+        setNewClientData({ nom: '', prenom: '', telephone: '' });
+        setError('');
+        
+        const message = result.offline 
+          ? `Client ${result.data.prenom} ${result.data.nom} créé hors ligne (${result.data.code_client})`
+          : `Client ${result.data.prenom} ${result.data.nom} créé avec succès (${result.data.code_client})`;
+        
+        showNotification(message, result.offline ? 'info' : 'success');
+        handleSelectClient(result.data);
+      }
     } catch (error) {
       console.error('Error creating client:', error);
       const errorMessage = error.response?.data?.errors 
@@ -603,7 +674,7 @@ const Passages = () => {
       setError(errorMessage);
       showNotification(errorMessage, 'error');
     }
-  }, [newClientData, handleSelectClient, showNotification]);
+  }, [newClientData, createClient, handleSelectClient, showNotification]);
 
   // Gérer la sélection des prestations
   const handleTogglePrestation = useCallback((prestation) => {
@@ -694,7 +765,7 @@ const Passages = () => {
     setError('');
   }, []);
 
-  // Créer le passage ET le paiement
+  // Créer le passage ET le paiement avec support hors ligne
   const handleCreatePassageAndPayment = useCallback(async () => {
     if (!selectedClient) {
       setError('Veuillez sélectionner un client');
@@ -711,9 +782,14 @@ const Passages = () => {
       const passageData = {
         client_id: selectedClient.id,
         date_passage: new Date().toISOString(),
+        est_gratuit: fidelityInfo?.est_gratuit || false,
+        montant_total: calculateTotal,
+        // Format correct des prestations avec 'id' au lieu de 'prestation_id'
         prestations: selectedPrestations.map(p => ({
-          id: p.id,
+          id: p.id,  // Changé de 'prestation_id' à 'id'
+          prestation_id: p.id,  // Ajouté pour compatibilité backend
           quantite: p.quantite,
+          prix_unitaire: p.prix,
           coiffeur_id: p.coiffeur_id,
         })),
         notes: remiseType !== 'aucune' && remiseValue 
@@ -721,79 +797,44 @@ const Passages = () => {
           : '',
       };
 
-      const passageResponse = await passagesAPI.create(passageData);
-      const newPassage = passageResponse.data.data.passage;
-      
-      handleCloseDialog();
-      
-      if (newPassage.est_gratuit) {
-        setShowCongratulationsDialog(true);
-        showNotification(`Passage #${newPassage.id} créé - Passage gratuit offert !`, 'success');
-        loadData();
-        return;
+      // Ajouter le paiement si ce n'est pas gratuit
+      if (!fidelityInfo?.est_gratuit) {
+        passageData.paiement = {
+          montant: calculateTotal,
+          mode_paiement: modePaiement,
+          date_paiement: new Date().toISOString(),
+        };
       }
 
-      const montantTotal = calculateTotal;
+      const result = await createPassage(passageData);
       
-      const paymentResponse = await paiementsAPI.create({
-        passage_id: newPassage.id,
-        montant_paye: montantTotal,
-        mode_paiement: modePaiement,
-        date_paiement: new Date().toISOString(),
-      });
-
-      showNotification(`Passage #${newPassage.id} créé et paiement enregistré avec succès !`, 'success');
-      
-      setShowRedirectAnimation(true);
-      
-      setTimeout(async () => {
-        try {
-          const receiptResponse = await paiementsAPI.getReceipt(paymentResponse.data.data.id);
+      if (result.success) {
+        handleCloseDialog();
+        
+        if (result.data.est_gratuit) {
+          setShowCongratulationsDialog(true);
+          showNotification(
+            result.offline 
+              ? `Passage gratuit créé hors ligne - #${result.data.id}`
+              : `Passage #${result.data.id} créé - Passage gratuit offert !`, 
+            result.offline ? 'info' : 'success'
+          );
+        } else {
+          const message = result.offline
+            ? `Passage et paiement enregistrés hors ligne - seront synchronisés`
+            : `Passage #${result.data.id} créé et paiement enregistré avec succès !`;
           
-          // Créer un blob et ouvrir dans une nouvelle fenêtre pour impression
-          const blob = new Blob([receiptResponse.data], { type: 'application/pdf' });
-          const url = window.URL.createObjectURL(blob);
+          showNotification(message, result.offline ? 'info' : 'success');
           
-          // Ouvrir le PDF dans une nouvelle fenêtre
-          const printWindow = window.open(url, '_blank');
-          
-          if (printWindow) {
-            // Attendre que le PDF soit chargé avant de lancer l'impression
-            printWindow.onload = () => {
-              setTimeout(() => {
-                printWindow.print();
-              }, 250);
-            };
-            
-            showNotification('Fenêtre d\'impression du reçu ouverte !', 'success');
-          } else {
-            // Si le popup est bloqué, télécharger le fichier
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `recu-${paymentResponse.data.data.numero_recu || paymentResponse.data.data.id}.pdf`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            
-            showNotification('Popup bloqué. Reçu téléchargé à la place.', 'info');
-          }
-          
-          // Nettoyer l'URL après un délai
+          // Afficher l'animation
+          setShowRedirectAnimation(true);
           setTimeout(() => {
-            window.URL.revokeObjectURL(url);
-          }, 60000); // 1 minute
-          
-        } catch (error) {
-          console.error('Error printing receipt:', error);
-          showNotification('Paiement enregistré mais erreur lors de l\'impression du reçu', 'warning');
+            setShowRedirectAnimation(false);
+          }, 2000);
         }
         
-        setTimeout(() => {
-          setShowRedirectAnimation(false);
-          loadData();
-        }, 1000);
-      }, 2000);
-      
+        loadData();
+      }
     } catch (error) {
       console.error('Error creating passage:', error);
       const errorMessage = error.response?.data?.errors 
@@ -804,9 +845,8 @@ const Passages = () => {
     } finally {
       setCreatingPassage(false);
     }
-  }, [selectedClient, selectedPrestations, calculateTotal, modePaiement, remiseType, remiseValue, handleCloseDialog, loadData, showNotification]);
+  }, [selectedClient, selectedPrestations, calculateTotal, modePaiement, remiseType, remiseValue, fidelityInfo, handleCloseDialog, createPassage, loadData, showNotification]);
 
-  // Gérer la confirmation des félicitations
   const handleCongratulationsConfirm = useCallback(async () => {
     setShowCongratulationsDialog(false);
     setShowRedirectAnimation(true);
@@ -841,23 +881,29 @@ const Passages = () => {
     });
   }, []);
 
-  // Confirmer la suppression d'un passage
+  // Confirmer la suppression d'un passage avec support hors ligne
   const handleConfirmDelete = useCallback(async () => {
     if (!deleteDialog.passageId) return;
 
     try {
-      await passagesAPI.delete(deleteDialog.passageId);
+      const result = await deletePassage(deleteDialog.passageId);
       
-      handleCloseDeleteDialog();
-      loadData();
-      
-      showNotification('Passage supprimé avec succès. Le nombre de passages du client a été réduit.', 'success');
+      if (result.success) {
+        handleCloseDeleteDialog();
+        loadData();
+        
+        const message = result.offline
+          ? 'Passage marqué pour suppression - sera synchronisé'
+          : 'Passage supprimé avec succès. Le nombre de passages du client a été réduit.';
+        
+        showNotification(message, result.offline ? 'info' : 'success');
+      }
     } catch (error) {
       console.error('Error deleting passage:', error);
       const errorMessage = error.response?.data?.message || 'Erreur lors de la suppression du passage';
       showNotification(errorMessage, 'error');
     }
-  }, [deleteDialog.passageId, handleCloseDeleteDialog, loadData, showNotification]);
+  }, [deleteDialog.passageId, deletePassage, handleCloseDeleteDialog, loadData, showNotification]);
 
   // Définition des colonnes
   const columns = useMemo(() => [
@@ -957,6 +1003,27 @@ const Passages = () => {
       ),
     },
     {
+      field: 'synced',
+      headerName: 'Statut',
+      width: 100,
+      headerAlign: 'center',
+      align: 'center',
+      renderCell: (params) => {
+        const synced = params.row?.synced !== false;
+        return synced ? (
+          <CloudDone color="success" fontSize="small" />
+        ) : (
+          <Chip 
+            icon={<WifiOff />}
+            label="Local" 
+            color="warning"
+            size="small"
+            sx={{ fontWeight: 600, fontSize: '0.7rem' }}
+          />
+        );
+      },
+    },
+    {
       field: 'actions',
       headerName: 'Actions',
       width: 100,
@@ -1004,7 +1071,28 @@ const Passages = () => {
         <Typography variant={isMobile ? "h5" : "h4"} sx={{ fontWeight: 700 }}>
           Gestion des passages
         </Typography>
+        
+        {/* Indicateur de synchronisation */}
+        <OfflineSyncIndicator />
       </Box>
+
+      {/* Alerte de mode hors ligne */}
+      {!isOnline && (
+        <Fade in={true}>
+          <Alert 
+            severity="warning" 
+            icon={<CloudOff />}
+            sx={{ mb: 2 }}
+          >
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              Mode hors ligne activé
+            </Typography>
+            <Typography variant="caption">
+              Les données seront automatiquement synchronisées une fois la connexion rétablie.
+            </Typography>
+          </Alert>
+        </Fade>
+      )}
 
       {error && !openDialog && (
         <Fade in={true}>
@@ -1088,10 +1176,9 @@ const Passages = () => {
               rows={passages}
               columns={columns}
               loading={loading}
-              paginationMode="server"
+              paginationMode="client"
               paginationModel={paginationModel}
               onPaginationModelChange={setPaginationModel}
-              rowCount={rowCount}
               pageSizeOptions={[10, 25, 50]}
               disableSelectionOnClick
               disableRowSelectionOnClick
@@ -1148,6 +1235,13 @@ const Passages = () => {
           </Box>
         </DialogTitle>
         <DialogContent>
+          {/* Alerte mode hors ligne */}
+          {!isOnline && (
+            <Alert severity="info" sx={{ mb: 2 }} icon={<WifiOff />}>
+              Mode hors ligne : Le client sera créé localement et synchronisé automatiquement.
+            </Alert>
+          )}
+          
           {error && (
             <Fade in={true}>
               <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
@@ -1234,6 +1328,13 @@ const Passages = () => {
           </Box>
         </DialogTitle>
         <DialogContent sx={{ p: { xs: 2, md: 3 } }}>
+          {/* Alerte mode hors ligne */}
+          {!isOnline && (
+            <Alert severity="info" sx={{ mb: 2 }} icon={<WifiOff />}>
+              Mode hors ligne : Le passage sera créé localement et synchronisé automatiquement.
+            </Alert>
+          )}
+
           {error && (
             <Fade in={true}>
               <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>
@@ -1613,7 +1714,7 @@ const Passages = () => {
               ? 'Traitement en cours...' 
               : fidelityInfo?.est_gratuit 
                 ? 'Valider le passage gratuit'
-                : 'Confirmer et générer le reçu'
+                : 'Confirmer et enregistrer'
             }
           </Button>
         </DialogActions>
@@ -1716,7 +1817,6 @@ const Passages = () => {
         }}
       >
         <DialogContent sx={{ textAlign: 'center', py: { xs: 4, md: 6 }, px: { xs: 2, md: 3 }, position: 'relative' }}>
-          {/* Icône principale */}
           <Box
             sx={{
               position: 'absolute',
