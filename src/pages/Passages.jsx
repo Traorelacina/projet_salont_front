@@ -70,6 +70,8 @@ import {
   CloudOff,
   CloudDone,
   WifiOff,
+  Print,
+  Download,
 } from '@mui/icons-material';
 import { prestationsAPI, usersAPI } from '../services/api';
 import { useOfflineClient } from '../hooks/useOfflineClient';
@@ -77,7 +79,6 @@ import { useOfflinePassage } from '../hooks/useOfflinePassage';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
-// ✅ AJOUTER les imports manquants
 import { networkManager } from '../services/networkManager';
 import { syncService } from '../services/syncService';
 
@@ -262,13 +263,13 @@ const PrestationRow = React.memo(({
       </TableCell>
       <TableCell align="right">
         <Typography sx={{ fontWeight: 600, color: 'primary.main' }}>
-          {prestation.prix} FCFA
+          {prestation.prix}
         </Typography>
       </TableCell>
       <TableCell align="right">
         {selected && selectedPrestation ? (
           <Typography sx={{ fontWeight: 700, color: 'success.main', fontSize: '1.1rem' }}>
-            {prestation.prix * selectedPrestation.quantite} FCFA
+            {prestation.prix * selectedPrestation.quantite}
           </Typography>
         ) : (
           <Typography variant="body2" color="text.secondary">-</Typography>
@@ -372,6 +373,968 @@ const RedirectAnimation = () => {
   );
 };
 
+
+const ReceiptTemplate = ({ receiptData, salon = {} }) => {
+  if (!receiptData) return null;
+
+  const getPaymentMethodLabel = (method) => {
+    const labels = {
+      especes: 'Espèces',
+      mobile_money: 'Mobile Money',
+      carte: 'Carte bancaire',
+      cheque: 'Chèque',
+      autre: 'Autre',
+    };
+    return labels[method] || method;
+  };
+
+  const formatNumber = (number) => {
+    return new Intl.NumberFormat('fr-FR', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(number);
+  };
+
+  // Calculer les montants de manière plus robuste
+  const montantTotal = receiptData.montant_total || 
+                      receiptData.prestations?.reduce((sum, p) => {
+                        const prix = p.prix_unitaire || p.prix_applique || p.prix || 0;
+                        const quantite = p.quantite || p.pivot?.quantite || 1;
+                        return sum + (prix * quantite);
+                      }, 0) || 0;
+  
+  const montantRemise = receiptData.montant_remise || 
+                       receiptData.remise_appliquee || 
+                       (receiptData.remise_type === 'pourcentage' && receiptData.remise_value
+                         ? Math.round(montantTotal * receiptData.remise_value / 100)
+                         : (receiptData.remise_value || 0)) || 0;
+  
+  const montantAPayer = receiptData.montant_apres_remise || 
+                       receiptData.paiement?.montant_paye || 
+                       receiptData.montant_paye || 
+                       Math.max(0, montantTotal - montantRemise);
+
+  return (
+    <Paper 
+      elevation={0}
+      id="receipt-content"
+      className="receipt-printable"
+      sx={{ 
+        maxWidth: 800,
+        mx: 'auto',
+        p: { xs: 2, sm: 2.5, md: 3 },
+        fontFamily: '"DejaVu Sans", "Arial", sans-serif',
+        fontSize: '12px',
+        color: '#333',
+        backgroundColor: 'white',
+        borderRadius: 1,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+        '@media print': {
+          maxWidth: 'none',
+          boxShadow: 'none',
+          padding: '20px',
+          margin: 0,
+          borderRadius: 0,
+        }
+      }}
+    >
+      {/* En-tête du salon */}
+      <Box 
+        sx={{ 
+          textAlign: 'center',
+          mb: 3,
+          pb: 2,
+          borderBottom: '2px solid #333',
+          '@media print': {
+            borderBottom: '2px solid #000',
+          }
+        }}
+      >
+        <Typography 
+          variant="h5" 
+          sx={{ 
+            fontSize: { xs: '18px', sm: '22px', md: '24px' },
+            fontWeight: 'bold',
+            mb: 1.5,
+            color: '#333',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            '@media print': {
+              fontSize: '24px',
+              color: '#000',
+            }
+          }}
+        >
+          {salon?.nom || 'Salon de Coiffure'}
+        </Typography>
+        <Box sx={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          gap: 0.5,
+          fontSize: { xs: '10px', sm: '11px' },
+          color: '#666',
+          '@media print': {
+            color: '#000',
+            fontSize: '11px',
+          }
+        }}>
+          <Typography sx={{ fontSize: 'inherit', color: 'inherit' }}>
+            {salon?.adresse || 'Abidjan, Côte d\'Ivoire'}
+          </Typography>
+          <Typography sx={{ fontSize: 'inherit', color: 'inherit' }}>
+            Tél: {salon?.telephone || '+225 XX XX XX XX XX'}
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Informations du reçu */}
+      <Box 
+        sx={{ 
+          display: 'flex',
+          flexDirection: { xs: 'column', sm: 'row' },
+          justifyContent: 'space-between',
+          mb: 3,
+          gap: { xs: 2, sm: 0 },
+          '@media print': {
+            flexDirection: 'row',
+          }
+        }}
+      >
+        <Box sx={{ 
+          width: { xs: '100%', sm: '50%' },
+          '@media print': {
+            width: '50%',
+          }
+        }}>
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#666',
+              textTransform: 'uppercase',
+              mb: 0.5,
+              fontWeight: 600,
+              letterSpacing: '0.3px',
+              '@media print': {
+                color: '#000',
+              }
+            }}
+          >
+            Numéro de reçu
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: { xs: '14px', sm: '16px' },
+              fontWeight: 'bold',
+              mb: 1.5,
+              color: '#1976d2',
+              '@media print': {
+                color: '#000',
+                fontSize: '16px',
+              }
+            }}
+          >
+            {receiptData.numero_recu || `#${receiptData.id}`}
+          </Typography>
+
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#666',
+              textTransform: 'uppercase',
+              mb: 0.5,
+              fontWeight: 600,
+              letterSpacing: '0.3px',
+              '@media print': {
+                color: '#000',
+              }
+            }}
+          >
+            Numéro de passage
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: { xs: '14px', sm: '16px' },
+              fontWeight: 'bold',
+              mb: 0,
+              color: '#1976d2',
+              '@media print': {
+                color: '#000',
+                fontSize: '16px',
+              }
+            }}
+          >
+            #{receiptData.numero_passage || receiptData.id}
+          </Typography>
+        </Box>
+
+        <Box sx={{ 
+          width: { xs: '100%', sm: '50%' },
+          textAlign: { xs: 'left', sm: 'right' },
+          '@media print': {
+            width: '50%',
+            textAlign: 'right',
+          }
+        }}>
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#666',
+              textTransform: 'uppercase',
+              mb: 0.5,
+              fontWeight: 600,
+              letterSpacing: '0.3px',
+              '@media print': {
+                color: '#000',
+              }
+            }}
+          >
+            Date et heure
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: { xs: '14px', sm: '16px' },
+              fontWeight: 'bold',
+              mb: 1.5,
+              color: '#333',
+              '@media print': {
+                color: '#000',
+                fontSize: '16px',
+              }
+            }}
+          >
+            {format(
+              new Date(receiptData.date_passage || receiptData.date_paiement || receiptData.created_at), 
+              'dd/MM/yyyy HH:mm',
+              { locale: fr }
+            )}
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Informations client */}
+      <Box 
+        sx={{ 
+          backgroundColor: '#f8f9fa',
+          p: { xs: 1.5, sm: 1.875 },
+          mb: 3,
+          borderRadius: '6px',
+          border: '1px solid #e9ecef',
+          '@media print': {
+            backgroundColor: '#f5f5f5',
+            border: '1px solid #ddd',
+          }
+        }}
+      >
+        <Typography 
+          sx={{ 
+            fontSize: '11px',
+            textTransform: 'uppercase',
+            color: '#666',
+            mb: 1.25,
+            fontWeight: 600,
+            letterSpacing: '0.5px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+            '@media print': {
+              color: '#000',
+            }
+          }}
+        >
+          <Person sx={{ fontSize: 14 }} />
+          Informations du client
+        </Typography>
+        
+        <Grid container spacing={1.5}>
+          <Grid item xs={12}>
+            <Typography 
+              sx={{ 
+                fontWeight: 'bold',
+                fontSize: '15px',
+                color: '#333',
+                mb: 0.5,
+                '@media print': {
+                  color: '#000',
+                }
+              }}
+            >
+              {receiptData.client?.prenom} {receiptData.client?.nom}
+            </Typography>
+          </Grid>
+          
+          {receiptData.client?.telephone && (
+            <Grid item xs={12} sm={6}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Phone sx={{ fontSize: 13, color: '#666' }} />
+                <Typography sx={{ 
+                  fontSize: '12px', 
+                  color: '#666',
+                  '@media print': {
+                    color: '#000',
+                  }
+                }}>
+                  {receiptData.client.telephone}
+                </Typography>
+              </Box>
+            </Grid>
+          )}
+          
+          {receiptData.client?.code_client && (
+            <Grid item xs={12} sm={6}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Chip 
+                  label={`Code: ${receiptData.client.code_client}`}
+                  size="small"
+                  sx={{ 
+                    height: 22,
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    bgcolor: '#e3f2fd',
+                    color: '#1976d2',
+                    border: '1px solid #bbdefb',
+                  }}
+                />
+              </Box>
+            </Grid>
+          )}
+        </Grid>
+      </Box>
+
+      {/* Tableau des prestations */}
+      <Box 
+        component="table"
+        sx={{ 
+          width: '100%',
+          borderCollapse: 'collapse',
+          mb: 3,
+          '& thead': {
+            backgroundColor: '#333',
+            color: 'white',
+            '@media print': {
+              backgroundColor: '#000',
+            }
+          },
+          '& th, & td': {
+            padding: { xs: '8px', sm: '10px', md: '12px' },
+            textAlign: 'left',
+            borderBottom: '1px solid #e0e0e0',
+            fontSize: { xs: '11px', sm: '12px' },
+            '@media print': {
+              padding: '10px',
+              borderBottom: '1px solid #ddd',
+              fontSize: '12px',
+            }
+          },
+          '& th': {
+            fontSize: { xs: '10px', sm: '11px' },
+            textTransform: 'uppercase',
+            fontWeight: 600,
+            letterSpacing: '0.3px',
+            paddingTop: { xs: '10px', sm: '12px' },
+            paddingBottom: { xs: '10px', sm: '12px' },
+            '@media print': {
+              fontSize: '11px',
+            }
+          },
+          '& td': {
+            verticalAlign: 'top',
+          },
+          '& tbody tr:last-child td': {
+            borderBottom: 'none',
+          },
+          '& .text-right': {
+            textAlign: 'right',
+          },
+          '& .text-center': {
+            textAlign: 'center',
+          },
+        }}
+      >
+        <thead>
+          <tr>
+            <th>Prestation</th>
+            <th className="text-center">Qté</th>
+            <th className="text-right">Prix unitaire</th>
+            <th className="text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {receiptData.prestations?.map((prestation, index) => {
+            const prixUnitaire = prestation.prix_unitaire || prestation.prix_applique || prestation.prix || 0;
+            const quantite = prestation.quantite || prestation.pivot?.quantite || 1;
+            const total = prixUnitaire * quantite;
+
+            return (
+              <tr key={index}>
+                <td>
+                  <Typography sx={{ 
+                    fontWeight: 500, 
+                    fontSize: { xs: '11px', sm: '12px' },
+                    '@media print': {
+                      fontSize: '12px',
+                    }
+                  }}>
+                    {prestation.libelle || prestation.nom}
+                  </Typography>
+                </td>
+                <td className="text-center">
+                  <Typography sx={{ 
+                    fontWeight: 500,
+                    fontSize: { xs: '11px', sm: '12px' },
+                    '@media print': {
+                      fontSize: '12px',
+                    }
+                  }}>
+                    {quantite}
+                  </Typography>
+                </td>
+                <td className="text-right">
+                  <Typography sx={{ 
+                    fontWeight: 500,
+                    fontSize: { xs: '11px', sm: '12px' },
+                    '@media print': {
+                      fontSize: '12px',
+                    }
+                  }}>
+                    {formatNumber(prixUnitaire)} FCFA
+                  </Typography>
+                </td>
+                <td className="text-right">
+                  <Typography sx={{ 
+                    fontWeight: 600,
+                    color: '#2e7d32',
+                    fontSize: { xs: '11px', sm: '12px' },
+                    '@media print': {
+                      color: '#000',
+                      fontSize: '12px',
+                    }
+                  }}>
+                    {formatNumber(total)} FCFA
+                  </Typography>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </Box>
+
+      {/* Totaux - SECTION CORRIGÉE */}
+      <Box sx={{ 
+        mt: 3, 
+        textAlign: 'right',
+        backgroundColor: '#f8f9fa',
+        p: { xs: 2, sm: 2.5 },
+        borderRadius: '6px',
+        border: '1px solid #e9ecef',
+        '@media print': {
+          backgroundColor: '#f5f5f5',
+          border: '1px solid #ddd',
+        }
+      }}>
+        {/* Sous-total (avant remise) */}
+        <Box 
+          sx={{ 
+            display: 'flex',
+            justifyContent: 'space-between',
+            mb: 1.5,
+            pb: 1,
+            borderBottom: '1px dashed #ddd',
+          }}
+        >
+          <Typography sx={{ 
+            fontSize: { xs: '12px', sm: '13px' },
+            color: '#666',
+            fontWeight: 500,
+            '@media print': {
+              color: '#000',
+              fontSize: '13px',
+            }
+          }}>
+            Sous-total
+          </Typography>
+          <Typography sx={{ 
+            fontSize: { xs: '13px', sm: '14px' },
+            fontWeight: 600,
+            color: '#333',
+            minWidth: '150px',
+            textAlign: 'right',
+            '@media print': {
+              color: '#000',
+              fontSize: '14px',
+            }
+          }}>
+            {formatNumber(montantTotal)} FCFA
+          </Typography>
+        </Box>
+
+        {/* Remise appliquée - TOUJOURS AFFICHÉE si > 0 */}
+        {montantRemise > 0 && (
+          <Box 
+            sx={{ 
+              display: 'flex',
+              justifyContent: 'space-between',
+              mb: 0.75,
+              pb: 0.75,
+            }}
+          >
+            <Typography sx={{ 
+              fontSize: { xs: '12px', sm: '13px' },
+              color: '#d32f2f',
+              fontWeight: 500,
+              '@media print': {
+                color: '#d32f2f',
+                fontSize: '13px',
+              }
+            }}>
+              Remise appliquée
+            </Typography>
+            <Typography sx={{ 
+              fontSize: { xs: '13px', sm: '14px' },
+              fontWeight: 700,
+              color: '#d32f2f',
+              minWidth: '150px',
+              textAlign: 'right',
+              '@media print': {
+                color: '#d32f2f',
+                fontSize: '14px',
+              }
+            }}>
+              - {formatNumber(montantRemise)} FCFA
+            </Typography>
+          </Box>
+        )}
+
+        {/* Détail de la remise */}
+        {montantRemise > 0 && receiptData.remise_type && receiptData.remise_value && (
+          <Box 
+            sx={{ 
+              display: 'flex',
+              justifyContent: 'space-between',
+              mb: 1.5,
+            }}
+          >
+            <Typography sx={{ 
+              fontSize: '10px',
+              color: '#666',
+              fontStyle: 'italic',
+              pr: 2.5,
+              '@media print': {
+                color: '#666',
+              }
+            }}>
+              {receiptData.remise_type === 'pourcentage' 
+                ? `(${receiptData.remise_value}% de remise sur ${formatNumber(montantTotal)} FCFA)`
+                : `(Réduction forfaitaire de ${formatNumber(receiptData.remise_value)} FCFA)`
+              }
+            </Typography>
+            <Box sx={{ width: '150px' }}></Box>
+          </Box>
+        )}
+
+        {/* Montant final à payer (APRÈS remise) */}
+        <Box 
+          sx={{ 
+            display: 'flex',
+            justifyContent: 'space-between',
+            mt: 2,
+            pt: 1.5,
+            borderTop: '2px solid #333',
+          }}
+        >
+          <Typography sx={{ 
+            fontSize: { xs: '14px', sm: '16px' },
+            fontWeight: 700,
+            color: '#333',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            '@media print': {
+              color: '#000',
+              fontSize: '16px',
+            }
+          }}>
+            {receiptData.est_gratuit ? 'Montant offert' : 'Montant à payer'}
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: { xs: '16px', sm: '18px', md: '20px' },
+              fontWeight: 800,
+              color: receiptData.est_gratuit ? '#2e7d32' : '#1976d2',
+              minWidth: '150px',
+              textAlign: 'right',
+              '@media print': {
+                color: receiptData.est_gratuit ? '#2e7d32' : '#000',
+                fontSize: '20px',
+              }
+            }}
+          >
+            {formatNumber(montantAPayer)} FCFA
+          </Typography>
+        </Box>
+
+      </Box>
+
+      {/* Section paiement */}
+      <Box 
+        sx={{ 
+          mt: 3,
+          p: { xs: 1.5, sm: 2 },
+          backgroundColor: '#e3f2fd',
+          borderRadius: '6px',
+          borderLeft: '4px solid #1976d2',
+          '@media print': {
+            backgroundColor: '#f0f8ff',
+            borderLeft: '4px solid #2196F3',
+          }
+        }}
+      >
+        <Grid container spacing={1}>
+          <Grid item xs={12} sm={6}>
+            <Typography sx={{ 
+              fontSize: '12px',
+              fontWeight: 600,
+              color: '#1976d2',
+              mb: 0.5,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              '@media print': {
+                color: '#1976d2',
+              }
+            }}>
+              <AttachMoney sx={{ fontSize: 14 }} />
+              Mode de paiement
+            </Typography>
+            <Typography sx={{ 
+              fontSize: '14px',
+              fontWeight: 700,
+              color: '#333',
+              '@media print': {
+                color: '#000',
+              }
+            }}>
+              {getPaymentMethodLabel(receiptData.paiement?.mode_paiement || receiptData.mode_paiement)}
+            </Typography>
+          </Grid>
+          
+          <Grid item xs={12} sm={6}>
+            <Typography sx={{ 
+              fontSize: '12px',
+              fontWeight: 600,
+              color: '#1976d2',
+              mb: 0.5,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              '@media print': {
+                color: '#1976d2',
+              }
+            }}>
+              <Receipt sx={{ fontSize: 14 }} />
+              Statut
+            </Typography>
+            <Typography sx={{ 
+              fontSize: '14px',
+              fontWeight: 700,
+              color: receiptData.est_gratuit ? '#2e7d32' : '#1976d2',
+              '@media print': {
+                color: receiptData.est_gratuit ? '#2e7d32' : '#1976d2',
+              }
+            }}>
+              {receiptData.est_gratuit ? 'GRATUIT - OFFERT' : 'PAYÉ'}
+            </Typography>
+          </Grid>
+        </Grid>
+      </Box>
+
+      {/* Badge gratuit - plus visible */}
+      {receiptData.est_gratuit && (
+        <Box 
+          sx={{ 
+            mt: 3,
+            p: { xs: 1.5, sm: 2 },
+            backgroundColor: '#4CAF50',
+            color: 'white',
+            textAlign: 'center',
+            fontWeight: 'bold',
+            borderRadius: '6px',
+            boxShadow: '0 4px 8px rgba(76, 175, 80, 0.3)',
+            '@media print': {
+              backgroundColor: '#4CAF50',
+              color: 'white',
+              boxShadow: 'none',
+            }
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 1 }}>
+            <CardGiftcard sx={{ fontSize: { xs: 20, sm: 24 } }} />
+            <Typography sx={{ 
+              fontSize: { xs: '14px', sm: '16px' },
+              fontWeight: 700,
+              letterSpacing: '0.5px',
+            }}>
+              PASSAGE GRATUIT
+            </Typography>
+          </Box>
+          <Typography sx={{ 
+            fontSize: { xs: '11px', sm: '12px' },
+            opacity: 0.9,
+          }}>
+            Programme de fidélité - Merci pour votre confiance !
+          </Typography>
+        </Box>
+      )}
+
+      {/* Notes */}
+      {receiptData.notes && (
+        <Box 
+          sx={{ 
+            mt: 3,
+            p: { xs: 1.5, sm: 2 },
+            backgroundColor: '#fff8e1',
+            borderRadius: '6px',
+            borderLeft: '4px solid #ff9800',
+            '@media print': {
+              backgroundColor: '#fff8e1',
+              borderLeft: '4px solid #ff9800',
+            }
+          }}
+        >
+          <Typography sx={{ 
+            fontSize: '12px',
+            fontWeight: 600,
+            color: '#ff9800',
+            mb: 0.5,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+            '@media print': {
+              color: '#ff9800',
+            }
+          }}>
+            <Description sx={{ fontSize: 14 }} />
+            Notes
+          </Typography>
+          <Typography sx={{ 
+            fontSize: '12px',
+            color: '#666',
+            fontStyle: 'italic',
+            '@media print': {
+              color: '#000',
+            }
+          }}>
+            {receiptData.notes}
+          </Typography>
+        </Box>
+      )}
+
+      {/* Pied de page */}
+      <Box 
+        sx={{ 
+          mt: 4,
+          pt: 2.5,
+          borderTop: '1px solid #ddd',
+          textAlign: 'center',
+          '@media print': {
+            mt: 3,
+            pt: 2,
+          }
+        }}
+      >
+        <Typography 
+          sx={{ 
+            fontSize: '11px',
+            color: '#666',
+            mb: 1,
+            fontWeight: 'bold',
+            letterSpacing: '0.3px',
+            '@media print': {
+              color: '#000',
+            }
+          }}
+        >
+          Merci pour votre visite et à bientôt !
+        </Typography>
+        <Box sx={{ 
+          display: 'flex', 
+          justifyContent: 'center', 
+          gap: 2,
+          flexWrap: 'wrap',
+          mt: 1.5,
+        }}>
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#999',
+              '@media print': {
+                color: '#666',
+              }
+            }}
+          >
+            Ce reçu est un document officiel
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#999',
+              '@media print': {
+                color: '#666',
+              }
+            }}
+          >
+            • 
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#999',
+              '@media print': {
+                color: '#666',
+              }
+            }}
+          >
+            Gardez ce reçu pour toute réclamation
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Styles pour l'impression */}
+      <style>
+        {`
+          @media print {
+            body {
+              margin: 0;
+              padding: 0;
+              background: white !important;
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+            
+            .receipt-printable {
+              max-width: 100% !important;
+              width: 100% !important;
+              box-shadow: none !important;
+              padding: 15px !important;
+              margin: 0 !important;
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+            
+            @page {
+              margin: 10mm;
+              size: A4;
+            }
+            
+            /* Assure que les couleurs s'impriment */
+            * {
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            
+            /* Évite les coupures dans les tableaux */
+            table {
+              page-break-inside: auto;
+            }
+            tr {
+              page-break-inside: avoid;
+              page-break-after: auto;
+            }
+          }
+          
+          /* Animation pour l'affichage à l'écran */
+          @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          
+          .receipt-printable {
+            animation: fadeIn 0.5s ease-out;
+          }
+        `}
+      </style>
+    </Paper>
+  );
+};
+
+
+
+const ReceiptDialog = ({ open, onClose, receiptData, onPrint }) => {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const [hasAutoPrinted, setHasAutoPrinted] = React.useState(false);
+
+  // ⭐ IMPRESSION AUTOMATIQUE dès l'ouverture du dialogue
+  React.useEffect(() => {
+    if (open && !hasAutoPrinted && receiptData) {
+      const timer = setTimeout(() => {
+        onPrint();
+        setHasAutoPrinted(true);
+      }, 500); // Délai de 500ms pour garantir le rendu complet
+      return () => clearTimeout(timer);
+    }
+    
+    // Reset du flag quand le dialogue se ferme
+    if (!open) {
+      setHasAutoPrinted(false);
+    }
+  }, [open, hasAutoPrinted, receiptData, onPrint]);
+
+  if (!receiptData) return null;
+
+  return (
+    <Dialog 
+      open={open} 
+      onClose={onClose} 
+      maxWidth="md" 
+      fullWidth
+      fullScreen={isMobile}
+      TransitionComponent={Zoom}
+    >
+      <DialogTitle>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Receipt color="primary" />
+            <Typography variant="h6">Reçu de paiement</Typography>
+          </Box>
+          <Box>
+            <IconButton 
+              onClick={onPrint} 
+              color="primary"
+              sx={{
+                transition: 'all 0.2s',
+                '&:hover': {
+                  transform: 'scale(1.1)',
+                }
+              }}
+            >
+              <Print />
+            </IconButton>
+            {isMobile && (
+              <IconButton onClick={onClose} edge="end">
+                <Close />
+              </IconButton>
+            )}
+          </Box>
+        </Box>
+      </DialogTitle>
+      <DialogContent>
+        <Fade in={true}>
+          <Box>
+            <ReceiptTemplate receiptData={receiptData} salon={{}} />
+          </Box>
+        </Fade>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={onClose}>
+          Fermer
+        </Button>
+        <Button onClick={onPrint} variant="contained" startIcon={<Print />}>
+          Imprimer
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
 const Passages = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -450,15 +1413,19 @@ const Passages = () => {
     passageInfo: null,
   });
 
+  // États pour le reçu
+  const [receiptDialog, setReceiptDialog] = useState({
+    open: false,
+    data: null,
+  });
+
   // Ref pour le debounce
   const searchTimeoutRef = useRef(null);
 
-  // ✅ CORRECTION : Synchronisation automatique
+  // Synchronisation automatique
   useEffect(() => {
-    // Synchroniser automatiquement quand on revient en ligne
     const unsubscribe = networkManager.subscribe((online) => {
       if (online) {
-        // Attendre 2 secondes que la connexion soit stable
         setTimeout(() => {
           syncService.trySyncNow().catch(err => 
             console.log('ℹ️ Sync automatique échouée:', err)
@@ -489,7 +1456,6 @@ const Passages = () => {
     try {
       setLoading(true);
       
-      // Charger les passages (en ligne ou hors ligne)
       const passagesResult = await getAllPassages({
         page: paginationModel.page + 1,
         per_page: paginationModel.pageSize,
@@ -503,10 +1469,8 @@ const Passages = () => {
         }
       }
 
-      // Charger les prestations et coiffeurs (avec support hors ligne)
       try {
         if (isOnline) {
-          // Mode en ligne - charger depuis le serveur
           const [prestationsRes, coiffeursRes] = await Promise.all([
             prestationsAPI.getAll({ actif: true }),
             usersAPI.getCoiffeurs({ with_prestations: false }),
@@ -518,12 +1482,10 @@ const Passages = () => {
           setPrestations(prestationsData);
           setCoiffeurs(coiffeursData);
 
-          // Mettre en cache localement pour utilisation hors ligne
           const { offlinePrestations, offlineCoiffeurs } = await import('../services/offlineStorage');
           await offlinePrestations.cacheAll(prestationsData);
           await offlineCoiffeurs.cacheAll(coiffeursData);
         } else {
-          // Mode hors ligne - charger depuis le cache local
           const { offlinePrestations, offlineCoiffeurs } = await import('../services/offlineStorage');
           const [localPrestations, localCoiffeurs] = await Promise.all([
             offlinePrestations.getActive(),
@@ -539,7 +1501,6 @@ const Passages = () => {
         }
       } catch (error) {
         console.error('Error loading prestations/coiffeurs:', error);
-        // En cas d'erreur, essayer de charger depuis le cache
         try {
           const { offlinePrestations, offlineCoiffeurs } = await import('../services/offlineStorage');
           const [localPrestations, localCoiffeurs] = await Promise.all([
@@ -625,7 +1586,6 @@ const Passages = () => {
     setSearchQuery('');
     setOpenDialog(true);
     
-    // Charger les informations de fidélité
     try {
       const fidelityResult = await checkFidelity(client.id);
       setFidelityInfo(fidelityResult);
@@ -765,8 +1725,82 @@ const Passages = () => {
     setError('');
   }, []);
 
-  // Créer le passage ET le paiement avec support hors ligne
-  const handleCreatePassageAndPayment = useCallback(async () => {
+  // Fonction pour imprimer le reçu
+const handlePrintReceipt = useCallback(() => {
+  // Créer une classe CSS pour masquer tout sauf le reçu pendant l'impression
+  const style = document.createElement('style');
+  style.id = 'print-receipt-style';
+  style.innerHTML = `
+    @media print {
+      /* Masquer tout le reste de la page */
+      body > *:not(.receipt-printable-wrapper) {
+        display: none !important;
+      }
+      
+      /* Masquer les dialogues MUI */
+      .MuiDialog-root,
+      .MuiBackdrop-root,
+      [role="presentation"] {
+        display: none !important;
+      }
+      
+      /* Afficher uniquement le reçu */
+      .receipt-printable-wrapper {
+        display: block !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
+        background: white !important;
+        z-index: 99999 !important;
+      }
+      
+      /* Styles spécifiques pour le reçu lors de l'impression */
+      .receipt-printable {
+        max-width: 100% !important;
+        box-shadow: none !important;
+        margin: 0 !important;
+        padding: 20px !important;
+      }
+    }
+  `;
+  
+  // Ajouter le style au document
+  document.head.appendChild(style);
+  
+  // Wrapper temporaire pour l'impression
+  const receiptElement = document.getElementById('receipt-content');
+  if (receiptElement) {
+    // Créer un wrapper avec la classe spéciale
+    const wrapper = document.createElement('div');
+    wrapper.className = 'receipt-printable-wrapper';
+    wrapper.style.display = 'none'; // Masqué par défaut
+    
+    // Cloner le reçu
+    const clone = receiptElement.cloneNode(true);
+    wrapper.appendChild(clone);
+    
+    // Ajouter au body
+    document.body.appendChild(wrapper);
+    
+    // Afficher le wrapper pour l'impression
+    wrapper.style.display = 'block';
+    
+    // Lancer l'impression
+    window.print();
+    
+    // Nettoyer après l'impression
+    setTimeout(() => {
+      document.body.removeChild(wrapper);
+      document.head.removeChild(style);
+    }, 100);
+  }
+}, []);
+
+
+  // Créer le passage ET le paiement avec impression du reçu
+  const handleCreatePassageAndPayment = useCallback(async (shouldPrint = false) => {
     if (!selectedClient) {
       setError('Veuillez sélectionner un client');
       return;
@@ -783,11 +1817,11 @@ const Passages = () => {
         client_id: selectedClient.id,
         date_passage: new Date().toISOString(),
         est_gratuit: fidelityInfo?.est_gratuit || false,
-        montant_total: calculateTotal,
-        // Format correct des prestations avec 'id' au lieu de 'prestation_id'
+        montant_total: calculateSubtotal, // Montant avant remise
+        montant_remise: calculateRemise, // Montant de la remise
         prestations: selectedPrestations.map(p => ({
-          id: p.id,  // Changé de 'prestation_id' à 'id'
-          prestation_id: p.id,  // Ajouté pour compatibilité backend
+          id: p.id,
+          prestation_id: p.id,
           quantite: p.quantite,
           prix_unitaire: p.prix,
           coiffeur_id: p.coiffeur_id,
@@ -797,10 +1831,9 @@ const Passages = () => {
           : '',
       };
 
-      // Ajouter le paiement si ce n'est pas gratuit
       if (!fidelityInfo?.est_gratuit) {
         passageData.paiement = {
-          montant: calculateTotal,
+          montant: calculateTotal, // Montant après remise
           mode_paiement: modePaiement,
           date_paiement: new Date().toISOString(),
         };
@@ -826,11 +1859,28 @@ const Passages = () => {
           
           showNotification(message, result.offline ? 'info' : 'success');
           
-          // Afficher l'animation
-          setShowRedirectAnimation(true);
-          setTimeout(() => {
-            setShowRedirectAnimation(false);
-          }, 2000);
+          // Si on doit imprimer, afficher le dialogue du reçu
+          if (shouldPrint) {
+            setReceiptDialog({
+              open: true,
+              data: {
+                ...result.data,
+                client: selectedClient,
+                prestations: selectedPrestations,
+                montant_total: calculateSubtotal,
+                montant_remise: calculateRemise,
+                paiement: {
+                  ...passageData.paiement,
+                  montant_paye: calculateTotal,
+                },
+              },
+            });
+          } else {
+            setShowRedirectAnimation(true);
+            setTimeout(() => {
+              setShowRedirectAnimation(false);
+            }, 2000);
+          }
         }
         
         loadData();
@@ -845,7 +1895,7 @@ const Passages = () => {
     } finally {
       setCreatingPassage(false);
     }
-  }, [selectedClient, selectedPrestations, calculateTotal, modePaiement, remiseType, remiseValue, fidelityInfo, handleCloseDialog, createPassage, loadData, showNotification]);
+  }, [selectedClient, selectedPrestations, calculateSubtotal, calculateRemise, calculateTotal, modePaiement, remiseType, remiseValue, fidelityInfo, handleCloseDialog, createPassage, loadData, showNotification]);
 
   const handleCongratulationsConfirm = useCallback(async () => {
     setShowCongratulationsDialog(false);
@@ -1072,11 +2122,9 @@ const Passages = () => {
           Gestion des passages
         </Typography>
         
-        {/* Indicateur de synchronisation */}
         <OfflineSyncIndicator />
       </Box>
 
-      {/* Alerte de mode hors ligne */}
       {!isOnline && (
         <Fade in={true}>
           <Alert 
@@ -1135,7 +2183,6 @@ const Passages = () => {
             </Grid>
           </Grid>
 
-          {/* Résultats de recherche */}
           {searchResults.length > 0 && (
             <Slide direction="down" in={true} mountOnEnter unmountOnExit>
               <Box sx={{ mt: 2 }}>
@@ -1235,7 +2282,6 @@ const Passages = () => {
           </Box>
         </DialogTitle>
         <DialogContent>
-          {/* Alerte mode hors ligne */}
           {!isOnline && (
             <Alert severity="info" sx={{ mb: 2 }} icon={<WifiOff />}>
               Mode hors ligne : Le client sera créé localement et synchronisé automatiquement.
@@ -1328,7 +2374,6 @@ const Passages = () => {
           </Box>
         </DialogTitle>
         <DialogContent sx={{ p: { xs: 2, md: 3 } }}>
-          {/* Alerte mode hors ligne */}
           {!isOnline && (
             <Alert severity="info" sx={{ mb: 2 }} icon={<WifiOff />}>
               Mode hors ligne : Le passage sera créé localement et synchronisé automatiquement.
@@ -1429,7 +2474,6 @@ const Passages = () => {
             </Grow>
           )}
 
-          {/* Layout responsive : Prestations et Résumé */}
           <Box sx={{ 
             display: 'flex', 
             gap: 3, 
@@ -1492,7 +2536,6 @@ const Passages = () => {
                   </Alert>
                 ) : (
                   <Box>
-                    {/* Liste des prestations sélectionnées */}
                     <Box sx={{ mb: 2, maxHeight: 250, overflowY: 'auto', pr: 1 }}>
                       {selectedPrestations.map((p) => {
                         const coiffeur = coiffeurs.find(c => c.id === p.coiffeur_id);
@@ -1543,7 +2586,6 @@ const Passages = () => {
 
                     <Divider sx={{ my: 2 }} />
 
-                    {/* Sous-total */}
                     <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                       <Typography variant="body1" sx={{ fontSize: { xs: '0.9rem', md: '1rem' } }}>Sous-total</Typography>
                       <Typography variant="body1" sx={{ fontWeight: 600, fontSize: { xs: '0.9rem', md: '1rem' } }}>
@@ -1551,7 +2593,6 @@ const Passages = () => {
                       </Typography>
                     </Box>
 
-                    {/* Section Remise */}
                     {!fidelityInfo?.est_gratuit && (
                       <Box sx={{ mb: 2, p: { xs: 1.5, md: 2 }, bgcolor: 'warning.lighter', borderRadius: 1 }}>
                         <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600, fontSize: { xs: '0.85rem', md: '0.875rem' } }}>
@@ -1616,7 +2657,6 @@ const Passages = () => {
                       </Box>
                     )}
 
-                    {/* Montant après remise */}
                     {remiseType !== 'aucune' && calculateRemise > 0 && !fidelityInfo?.est_gratuit && (
                       <Box sx={{ 
                         display: 'flex', 
@@ -1637,7 +2677,6 @@ const Passages = () => {
 
                     <Divider sx={{ my: 2 }} />
 
-                    {/* Mode de paiement */}
                     {!fidelityInfo?.est_gratuit && (
                       <Box sx={{ mt: 2 }}>
                         <FormControl fullWidth size={isMobile ? "medium" : "small"}>
@@ -1687,37 +2726,71 @@ const Passages = () => {
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: { xs: 2, md: 3 }, pb: 2, flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
-          {!isTablet && (
-            <Button onClick={handleCloseDialog} size="large">
-              Annuler
-            </Button>
-          )}
-          <Button 
-            onClick={handleCreatePassageAndPayment} 
-            variant="contained"
-            disabled={selectedPrestations.length === 0 || creatingPassage}
-            size="large"
-            fullWidth={isMobile}
-            startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <Receipt />}
-            sx={{
-              minWidth: { sm: 250 },
-              position: 'relative',
-              overflow: 'hidden',
-              transition: 'all 0.3s ease',
-              '&:hover': {
-                transform: 'translateY(-2px)',
-                boxShadow: 4,
-              },
-            }}
-          >
-            {creatingPassage 
-              ? 'Traitement en cours...' 
-              : fidelityInfo?.est_gratuit 
-                ? 'Valider le passage gratuit'
-                : 'Confirmer et enregistrer'
-            }
-          </Button>
-        </DialogActions>
+  {!isTablet && (
+    <Button onClick={handleCloseDialog} size="large">
+      Annuler
+    </Button>
+  )}
+  
+  {/* Bouton pour les passages gratuits */}
+  {fidelityInfo?.est_gratuit && (
+    <Button 
+      onClick={() => handleCreatePassageAndPayment(false)} 
+      variant="contained"
+      color="success"
+      disabled={selectedPrestations.length === 0 || creatingPassage}
+      size="large"
+      fullWidth={isMobile}
+      startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <CardGiftcard />}
+      sx={{
+        minWidth: { sm: 200 },
+        position: 'relative',
+        overflow: 'hidden',
+        transition: 'all 0.3s ease',
+        '&:hover': {
+          transform: 'translateY(-2px)',
+          boxShadow: 4,
+        },
+        bgcolor: 'success.main',
+        '&:hover': {
+          bgcolor: 'success.dark',
+        },
+      }}
+    >
+      {creatingPassage 
+        ? 'Traitement en cours...' 
+        : 'Valider le passage gratuit'
+      }
+    </Button>
+  )}
+  
+  {/* Bouton pour les passages payants (inchangé) */}
+  {!fidelityInfo?.est_gratuit && (
+    <Button 
+      onClick={() => handleCreatePassageAndPayment(true)} 
+      variant="contained"
+      disabled={selectedPrestations.length === 0 || creatingPassage}
+      size="large"
+      fullWidth={isMobile}
+      startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <Print />}
+      sx={{
+        minWidth: { sm: 200 },
+        position: 'relative',
+        overflow: 'hidden',
+        transition: 'all 0.3s ease',
+        '&:hover': {
+          transform: 'translateY(-2px)',
+          boxShadow: 4,
+        },
+      }}
+    >
+      {creatingPassage 
+        ? 'Traitement en cours...' 
+        : 'Confirmer et imprimer le reçu'
+      }
+    </Button>
+  )}
+</DialogActions>
       </Dialog>
 
       {/* Dialogue de confirmation de suppression */}
@@ -1949,6 +3022,20 @@ const Passages = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Dialogue de reçu */}
+      <ReceiptDialog
+        open={receiptDialog.open}
+        onClose={() => {
+          setReceiptDialog({ open: false, data: null });
+          setShowRedirectAnimation(true);
+          setTimeout(() => {
+            setShowRedirectAnimation(false);
+          }, 2000);
+        }}
+        receiptData={receiptDialog.data}
+        onPrint={handlePrintReceipt}
+      />
 
       {/* Notification Snackbar */}
       <Snackbar

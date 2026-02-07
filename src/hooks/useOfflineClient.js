@@ -5,7 +5,7 @@ import {
   syncQueue,
   offlinePassages,
   offlinePaiements,
-  initDB  // ✅ AJOUTER cet import
+  initDB  
 } from '../services/offlineStorage';
 import { networkManager } from '../services/networkManager';
 import { syncService } from '../services/syncService';
@@ -13,106 +13,128 @@ import { syncService } from '../services/syncService';
 export const useOfflineClient = () => {
   const isOnline = networkManager.getStatus();
 
-  // ✅ CORRECTION : Créer un client avec synchronisation immédiate en ligne
-  const createClient = useCallback(async (clientData) => {
-    try {
-      const dataToSend = {
-        nom: clientData.nom?.trim(),
-        prenom: clientData.prenom?.trim(),
-      };
-      
-      if (clientData.telephone?.trim()) {
-        dataToSend.telephone = clientData.telephone.trim();
-      }
+  // ✅ CORRECTION : Créer un client avec transaction correctement gérée
+const createClient = useCallback(async (clientData) => {
+  try {
+    const dataToSend = {
+      nom: clientData.nom?.trim(),
+      prenom: clientData.prenom?.trim(),
+    };
+    
+    if (clientData.telephone?.trim()) {
+      dataToSend.telephone = clientData.telephone.trim();
+    }
 
-      let result;
-      let offline = false;
+    let result;
+    let offline = false;
 
-      if (isOnline) {
-        // MODE EN LIGNE : Créer sur le serveur
-        try {
-          console.log('🌐 Création client en ligne:', dataToSend);
-          const response = await clientsAPI.create(dataToSend);
+    if (isOnline) {
+      // MODE EN LIGNE : Créer sur le serveur
+      try {
+        console.log('🌐 Création client en ligne:', dataToSend);
+        const response = await clientsAPI.create(dataToSend);
+        
+        if (response.data.success) {
+          const serverClient = response.data.data;
+          console.log('✅ Client créé sur serveur:', serverClient.id);
           
-          if (response.data.success) {
-            const serverClient = response.data.data;
-            console.log('✅ Client créé sur serveur:', serverClient.id);
+          // ✅ CORRECTION : Préparer le client local AVANT la transaction
+          const localClient = {
+            ...serverClient,
+            server_id: serverClient.id,
+            synced: true,
+            offline_created: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          
+          delete localClient.id; // IndexedDB générera son propre ID
+          
+          try {
+            // ✅ CORRECTION : Transaction UNIQUE avec récupération dans la même transaction
+            const db = await initDB();
+            const tx = db.transaction('clients', 'readwrite');
+            const store = tx.objectStore('clients');
             
-            // ✅ SIMPLE : Créer un client local avec les données du serveur
-            const localClient = {
-              ...serverClient,
-              server_id: serverClient.id,
-              synced: true,
-              offline_created: false,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
+            // Ajouter ET récupérer dans la même transaction
+            const localId = await store.add(localClient);
+            
+            // ✅ IMPORTANT : Récupérer AVANT de fermer la transaction
+            const completeClient = await store.get(localId);
+            
+            // ✅ TERMINER la transaction
+            await tx.done;
+            
+            console.log('📱 Client enregistré localement, ID local:', localId);
+            
+            // ✅ Créer l'objet de résultat COMPLET
+            result = {
+              success: true,
+              data: {
+                ...serverClient,
+                id: localId, // ID local pour l'affichage
+                local_id: localId,
+                // ✅ Inclure les champs nécessaires pour Passages.jsx
+                nombre_passages: 0,
+                derniere_visite: null,
+              },
+              offline: false,
             };
-            
-            // Ajouter à la base locale (sans ID pour que IndexedDB génère son propre ID)
-            delete localClient.id;
-            
-            try {
-              // ✅ CORRECTION : Utiliser initDB importé
-              const db = await initDB();
-              const tx = db.transaction('clients', 'readwrite');
-              const store = tx.objectStore('clients');
-              
-              const localId = await store.add(localClient);
-              await tx.done;
-              
-              console.log('📱 Client enregistré localement, ID local:', localId);
-              
-              // Récupérer le client complet
-              const completeClient = await store.get(localId);
-              
-              result = {
-                success: true,
-                data: {
-                  ...serverClient,
-                  id: localId, // ID local pour l'affichage
-                  local_id: localId,
-                },
-                offline: false,
-              };
-            } catch (localError) {
-              console.warn('⚠️ Impossible d\'enregistrer localement:', localError);
-              // Retourner quand même le client serveur
-              result = {
-                success: true,
-                data: serverClient,
-                offline: false,
-                warning: 'Client non enregistré localement',
-              };
-            }
+          } catch (localError) {
+            console.warn('⚠️ Impossible d\'enregistrer localement:', localError);
+            // Retourner quand même le client serveur
+            result = {
+              success: true,
+              data: {
+                ...serverClient,
+                id: serverClient.id,
+                // ✅ Ajouter les champs par défaut nécessaires
+                nombre_passages: 0,
+                derniere_visite: null,
+                code_client: serverClient.code_client,
+              },
+              offline: false,
+              warning: 'Client non enregistré localement',
+            };
           }
-        } catch (serverError) {
-          console.error('❌ Erreur création serveur:', serverError);
-          // Basculer en mode hors ligne
-          offline = true;
         }
-      } else {
+      } catch (serverError) {
+        console.error('❌ Erreur création serveur:', serverError);
+        // Basculer en mode hors ligne
         offline = true;
       }
-
-      if (offline || !result) {
-        // MODE HORS LIGNE : Créer localement
-        console.log('📱 Création client hors ligne');
-        const localResult = await offlineClients.create(dataToSend);
-        
-        result = {
-          success: true,
-          data: localResult,
-          offline: true,
-          message: 'Client créé hors ligne - sera synchronisé automatiquement',
-        };
-      }
-
-      return result;
-    } catch (error) {
-      console.error('Erreur création client:', error);
-      throw error;
+    } else {
+      offline = true;
     }
-  }, [isOnline]);
+
+    if (offline || !result) {
+      // MODE HORS LIGNE : Créer localement
+      console.log('📱 Création client hors ligne');
+      const localResult = await offlineClients.create(dataToSend);
+      
+      result = {
+        success: true,
+        data: {
+          ...localResult,
+          // ✅ S'assurer que tous les champs nécessaires sont présents
+          id: localResult.id,
+          local_id: localResult.id,
+          server_id: null,
+          synced: false,
+          nombre_passages: 0,
+          derniere_visite: null,
+        },
+        offline: true,
+        message: 'Client créé hors ligne - sera synchronisé automatiquement',
+      };
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Erreur création client:', error);
+    throw error;
+  }
+}, [isOnline]);
 
   // ✅ CORRECTION : Récupérer tous les clients avec fusion intelligente
   const getAllClients = useCallback(async (filters = {}) => {

@@ -1,4 +1,5 @@
 // services/syncService.js
+// services/syncService.js
 import { api, clientsAPI, passagesAPI, paiementsAPI } from './api';
 import { 
   offlineClients, 
@@ -36,13 +37,12 @@ class SyncService {
     return count > 0;
   }
 
-  // ✅ CORRECTION : Synchroniser un client avec vérification par code_client
+  // Synchroniser un client
   async syncClient(queueItem) {
     const { action, data, temp_id, local_id, server_id } = queueItem;
 
     try {
       if (action === 'create') {
-        // ✅ ÉTAPE 1 : Récupérer le client local pour avoir son code_client
         const localClient = await offlineClients.getById(local_id);
         
         if (!localClient) {
@@ -51,10 +51,8 @@ class SyncService {
 
         let existingClientId = null;
         
-        // ✅ ÉTAPE 2 : Vérifier si un client avec ce code_client existe déjà sur le serveur
         if (localClient.code_client) {
           try {
-            // Rechercher par code_client
             const searchResponse = await clientsAPI.getAll({ 
               search: localClient.code_client 
             });
@@ -72,25 +70,11 @@ class SyncService {
           }
         }
         
-        // ✅ ÉTAPE 3 : Si client existe déjà, juste associer
         if (existingClientId) {
-          // Mettre à jour le client local avec les données du serveur
           try {
             const serverResponse = await clientsAPI.getById(existingClientId);
             const serverClient = serverResponse.data.data;
             
-            // Mettre à jour le client local
-            const updatedClient = {
-              ...localClient,
-              ...serverClient,
-              id: localClient.id,
-              server_id: serverClient.id,
-              synced: true,
-              offline_created: false,
-              updated_at: new Date().toISOString(),
-            };
-            
-            // ✅ CORRECTION : Utiliser la méthode update de offlineClients
             await offlineClients.update(local_id, {
               server_id: serverClient.id,
               synced: true,
@@ -108,12 +92,9 @@ class SyncService {
             };
           } catch (updateError) {
             console.error('❌ Erreur mise à jour client local:', updateError);
-            // Continuer avec une création normale
           }
         }
         
-        // ✅ ÉTAPE 4 : Si client n'existe pas, le créer
-        // Validation avant envoi
         if (!data.nom || !data.prenom) {
           throw new Error('Nom et prénom requis');
         }
@@ -123,7 +104,6 @@ class SyncService {
           prenom: data.prenom.trim(),
         };
 
-        // Gérer le téléphone optionnel
         if (data.telephone && data.telephone.trim()) {
           clientData.telephone = data.telephone.trim();
         }
@@ -135,7 +115,6 @@ class SyncService {
           const serverClient = response.data.data;
           console.log('✅ Client synchronisé sur serveur:', serverClient.id);
           
-          // Mettre à jour le client local avec le server_id
           await offlineClients.update(local_id, {
             server_id: serverClient.id,
             synced: true,
@@ -197,19 +176,16 @@ class SyncService {
     } catch (error) {
       console.error('❌ Erreur synchronisation client:', error);
       
-      // Gestion spéciale des erreurs 422 (validation)
       if (error.response?.status === 422) {
         const errors = error.response?.data?.errors;
         
         if (errors?.telephone) {
           console.warn('⚠️ Téléphone dupliqué');
           
-          // Si téléphone dupliqué, essayer sans téléphone
           try {
             const clientData = {
               nom: data.nom?.trim(),
               prenom: data.prenom?.trim(),
-              // Pas de téléphone
             };
             
             const response = await clientsAPI.create(clientData);
@@ -243,19 +219,17 @@ class SyncService {
     }
   }
 
-  // Synchroniser un passage
+  // ✅ SIMPLIFICATION : Synchroniser un passage - le paiement est créé automatiquement par le serveur
   async syncPassage(queueItem) {
     const { action, data, temp_id, local_id, server_id } = queueItem;
 
     try {
       if (action === 'create') {
-        // Vérifier que client_id existe
         if (!data.client_id) {
           console.error('❌ client_id manquant dans les données de passage:', data);
           throw new Error('client_id est requis pour créer un passage');
         }
 
-        // Récupérer le client local
         const localClient = await offlineClients.getById(data.client_id);
         
         if (!localClient) {
@@ -263,19 +237,16 @@ class SyncService {
           throw new Error(`Client local ${data.client_id} non trouvé`);
         }
 
-        // Utiliser le server_id du client
         const clientServerId = localClient.server_id;
         
         if (!clientServerId) {
           throw new Error('Le client n\'a pas encore été synchronisé avec le serveur');
         }
 
-        // Valider les prestations
         if (!data.prestations || data.prestations.length === 0) {
           throw new Error('Au moins une prestation est requise');
         }
 
-        // Normaliser les prestations
         const normalizedPrestations = data.prestations.map(p => {
           const prestationId = p.id || p.prestation_id;
           
@@ -310,53 +281,28 @@ class SyncService {
           
           await offlinePassages.markAsSynced(local_id, serverPassage.id);
           
-          // Synchroniser le paiement si nécessaire
-          if (!data.est_gratuit) {
-            let paiementLocal = null;
-            try {
-              paiementLocal = await offlinePaiements.getByPassageId(local_id);
-            } catch (e) {
-              console.log('ℹ️ Pas de paiement local trouvé');
+          // ✅ IMPORTANT : Le serveur crée automatiquement le paiement lors de la création du passage
+          // Pas besoin de synchroniser un paiement séparé
+          console.log('✅ Paiement créé automatiquement par le serveur pour le passage:', serverPassage.id);
+          
+          // ✅ Marquer le paiement local comme synchronisé si il existe
+          try {
+            const localPaiement = await offlinePaiements.getByPassageId(local_id);
+            if (localPaiement) {
+              // Le paiement a été créé automatiquement par le serveur, on le marque comme synchronisé
+              // On n'a pas besoin du server_id car le paiement est lié au passage
+              await offlinePaiements.markAsSynced(localPaiement.id, null, true);
+              console.log('✅ Paiement local marqué comme synchronisé');
             }
-
-            if (paiementLocal) {
-              try {
-                console.log('📤 Synchronisation paiement pour passage:', serverPassage.id);
-                
-                const montantPaye = paiementLocal.montant_paye || paiementLocal.montant;
-                
-                if (!montantPaye || montantPaye <= 0) {
-                  console.error('❌ Montant paiement invalide:', paiementLocal);
-                  throw new Error('Montant de paiement invalide');
-                }
-
-                const paiementData = {
-                  passage_id: serverPassage.id,
-                  montant_paye: parseFloat(montantPaye),
-                  mode_paiement: paiementLocal.mode_paiement || 'especes',
-                  date_paiement: paiementLocal.date_paiement || new Date().toISOString(),
-                  notes: paiementLocal.notes || '',
-                };
-
-                console.log('💰 Données paiement:', paiementData);
-                const paiementResponse = await paiementsAPI.create(paiementData);
-                
-                if (paiementResponse.data.success) {
-                  console.log('✅ Paiement synchronisé:', paiementResponse.data.data.id);
-                  await offlinePaiements.markAsSynced(paiementLocal.id, paiementResponse.data.data.id);
-                }
-              } catch (paiementError) {
-                console.error('❌ Erreur synchronisation paiement:', paiementError);
-                // Ne pas bloquer la sync du passage
-              }
-            }
+          } catch (e) {
+            console.log('ℹ️ Pas de paiement local à synchroniser');
           }
           
           return {
             success: true,
             local_id,
             server_id: serverPassage.id,
-            message: 'Passage synchronisé avec succès',
+            message: 'Passage synchronisé avec succès (paiement créé automatiquement)',
           };
         }
       } else if (action === 'update') {
@@ -405,66 +351,29 @@ class SyncService {
     }
   }
 
-  // Synchroniser un paiement
+  // ✅ SUPPRESSION de syncPaiement - Les paiements sont créés automatiquement par le serveur
   async syncPaiement(queueItem) {
     const { action, data, temp_id, local_id, server_id } = queueItem;
 
+    console.log(`ℹ️ Synchronisation paiement ignorée - les paiements sont créés automatiquement par le serveur`);
+    
+    // ✅ Marquer directement comme synchronisé car le paiement est créé automatiquement
     try {
-      if (action === 'create') {
-        const localPassage = await offlinePassages.getById(data.passage_id);
-        const passageServerId = localPassage?.server_id || data.passage_id;
-
-        const paiementData = {
-          passage_id: passageServerId,
-          montant_paye: parseFloat(data.montant_paye || data.montant),
-          mode_paiement: data.mode_paiement || 'especes',
-          date_paiement: data.date_paiement || new Date().toISOString(),
-          notes: data.notes || '',
-        };
-
-        console.log('📤 Synchronisation paiement individuel:', paiementData);
-        const response = await paiementsAPI.create(paiementData);
-
-        if (response.data.success) {
-          const serverPaiement = response.data.data;
-          console.log('✅ Paiement créé sur serveur:', serverPaiement.id);
-          
-          await offlinePaiements.markAsSynced(local_id, serverPaiement.id);
-          
-          return {
-            success: true,
-            local_id,
-            server_id: serverPaiement.id,
-            message: 'Paiement synchronisé avec succès',
-          };
-        }
-      } else if (action === 'delete') {
-        console.log('🗑️ Synchronisation suppression paiement:', server_id);
-        
-        const response = await paiementsAPI.delete(server_id);
-        
-        if (response.data.success) {
-          console.log('✅ Paiement supprimé sur serveur:', server_id);
-          
-          return {
-            success: true,
-            message: 'Paiement supprimé avec succès',
-          };
-        }
+      const localPaiement = await offlinePaiements.getById(local_id);
+      if (localPaiement) {
+        await offlinePaiements.markAsSynced(local_id, null, true);
+        console.log(`✅ Paiement ${local_id} marqué comme synchronisé (créé automatiquement par le serveur)`);
       }
     } catch (error) {
-      console.error('❌ Erreur synchronisation paiement:', error);
-      
-      if (action === 'delete' && error.response?.status === 404) {
-        console.log('⚠️ Paiement déjà supprimé sur le serveur');
-        return {
-          success: true,
-          message: 'Paiement déjà supprimé sur le serveur',
-        };
-      }
-      
-      throw error;
+      console.log(`ℹ️ Paiement ${local_id} non trouvé localement`);
     }
+    
+    return {
+      success: true,
+      local_id,
+      server_id: null,
+      message: 'Paiement synchronisé (créé automatiquement par le serveur lors de la création du passage)',
+    };
   }
 
   // Synchroniser un élément de la file
@@ -484,7 +393,7 @@ class SyncService {
           result = await this.syncPassage(queueItem);
           break;
         case 'paiements':
-          result = await this.syncPaiement(queueItem);
+          result = await this.syncPaiement(queueItem); // Simple marquage comme synchronisé
           break;
         default:
           throw new Error(`Type d'entité non supporté: ${entity}`);
@@ -541,7 +450,7 @@ class SyncService {
 
       console.log(`🔄 Synchronisation de ${pendingItems.length} élément(s)...`);
 
-      // Trier par ordre de dépendance
+      // Trier pour synchroniser les clients d'abord, puis les passages
       const sortedItems = pendingItems.sort((a, b) => {
         const entityOrder = { clients: 1, passages: 2, paiements: 3 };
         const entityDiff = (entityOrder[a.entity] || 999) - (entityOrder[b.entity] || 999);
