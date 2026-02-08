@@ -1,11 +1,11 @@
-// services/syncService.js
-// services/syncService.js
+// services/syncService.js - VERSION FINALE CORRIGÉE
 import { api, clientsAPI, passagesAPI, paiementsAPI } from './api';
 import { 
   offlineClients, 
   offlinePassages, 
   offlinePaiements,
-  syncQueue 
+  syncQueue,
+  initDB,
 } from './offlineStorage';
 import { networkManager } from './networkManager';
 
@@ -219,7 +219,7 @@ class SyncService {
     }
   }
 
-  // ✅ SIMPLIFICATION : Synchroniser un passage - le paiement est créé automatiquement par le serveur
+  // ✅ CORRECTION COMPLÈTE : Synchroniser un passage avec récupération du paiement
   async syncPassage(queueItem) {
     const { action, data, temp_id, local_id, server_id } = queueItem;
 
@@ -276,26 +276,93 @@ class SyncService {
         const response = await passagesAPI.create(passageData);
 
         if (response.data.success) {
-          const serverPassage = response.data.data;
+          const responseData = response.data.data;
+          const serverPassage = responseData.passage || responseData.data || responseData;
+          
+          console.log('📦 Réponse serveur passage:', JSON.stringify(response.data, null, 2));
+          
+          if (!serverPassage || !serverPassage.id) {
+            console.error('❌ Réponse serveur invalide - ID manquant');
+            console.error('Structure de la réponse:', response.data);
+            throw new Error('Le serveur n\'a pas retourné d\'ID pour le passage créé');
+          }
+          
           console.log('✅ Passage créé sur serveur:', serverPassage.id);
           
+          // ✅ Marquer le passage comme synchronisé
           await offlinePassages.markAsSynced(local_id, serverPassage.id);
           
-          // ✅ IMPORTANT : Le serveur crée automatiquement le paiement lors de la création du passage
-          // Pas besoin de synchroniser un paiement séparé
-          console.log('✅ Paiement créé automatiquement par le serveur pour le passage:', serverPassage.id);
+          // ✅ CORRECTION : Récupérer le paiement créé automatiquement par le serveur
+          let serverPaiementId = null;
           
-          // ✅ Marquer le paiement local comme synchronisé si il existe
+          // Vérifier si le serveur a retourné le paiement dans la réponse
+          if (serverPassage.paiement && serverPassage.paiement.id) {
+            serverPaiementId = serverPassage.paiement.id;
+            console.log('✅ Paiement serveur trouvé dans la réponse:', serverPaiementId);
+          } else {
+            // Si pas dans la réponse, récupérer via l'API
+            try {
+              console.log(`🔍 Récupération du paiement pour le passage ${serverPassage.id}...`);
+              
+              // ✅ Essayer d'abord avec la méthode getByPassage
+              let paiementResponse;
+              try {
+                paiementResponse = await paiementsAPI.getByPassage(serverPassage.id);
+              } catch (apiError) {
+                // Si la route n'existe pas, essayer avec getAll + filtre
+                console.log('ℹ️ Route getByPassage non disponible, utilisation de getAll');
+                paiementResponse = await paiementsAPI.getAll({ passage_id: serverPassage.id });
+              }
+              
+              if (paiementResponse.data && paiementResponse.data.data) {
+                const paiementData = paiementResponse.data.data;
+                const serverPaiement = Array.isArray(paiementData) 
+                  ? paiementData[0] 
+                  : paiementData;
+                
+                if (serverPaiement && serverPaiement.id) {
+                  serverPaiementId = serverPaiement.id;
+                  console.log('✅ Paiement serveur récupéré:', serverPaiementId);
+                }
+              }
+            } catch (paiementError) {
+              console.warn('⚠️ Impossible de récupérer le paiement serveur:', paiementError);
+            }
+          }
+          
+          // ✅ Marquer le paiement local comme synchronisé AVEC le server_id
           try {
-            const localPaiement = await offlinePaiements.getByPassageId(local_id);
+            const db = await initDB();
+            const tx = db.transaction('paiements', 'readonly');
+            const store = tx.objectStore('paiements');
+            const allPaiements = await store.getAll();
+            await tx.done;
+            
+            const localPaiement = allPaiements.find(p => p.passage_id === local_id);
+            
             if (localPaiement) {
-              // Le paiement a été créé automatiquement par le serveur, on le marque comme synchronisé
-              // On n'a pas besoin du server_id car le paiement est lié au passage
-              await offlinePaiements.markAsSynced(localPaiement.id, null, true);
-              console.log('✅ Paiement local marqué comme synchronisé');
+              // ✅ Mettre à jour avec le server_id
+              const updateTx = db.transaction('paiements', 'readwrite');
+              const updateStore = updateTx.objectStore('paiements');
+              
+              const updatedPaiement = {
+                ...localPaiement,
+                synced: true,
+                offline_created: false,
+                updated_at: new Date().toISOString(),
+              };
+              
+              if (serverPaiementId) {
+                updatedPaiement.server_id = serverPaiementId;
+              }
+              
+              await updateStore.put(updatedPaiement);
+              await updateTx.done;
+              
+              console.log(`✅ Paiement local ${localPaiement.id} synchronisé avec server_id: ${serverPaiementId || 'non disponible'}`);
             }
           } catch (e) {
-            console.log('ℹ️ Pas de paiement local à synchroniser');
+            console.log('ℹ️ Pas de paiement local à synchroniser:', e);
           }
           
           return {
@@ -351,28 +418,20 @@ class SyncService {
     }
   }
 
-  // ✅ SUPPRESSION de syncPaiement - Les paiements sont créés automatiquement par le serveur
+  // Synchroniser un paiement - Les paiements sont créés automatiquement par le serveur
   async syncPaiement(queueItem) {
     const { action, data, temp_id, local_id, server_id } = queueItem;
 
-    console.log(`ℹ️ Synchronisation paiement ignorée - les paiements sont créés automatiquement par le serveur`);
+    console.log(`ℹ️ Synchronisation paiement ${local_id} - les paiements sont créés automatiquement par le serveur`);
     
-    // ✅ Marquer directement comme synchronisé car le paiement est créé automatiquement
-    try {
-      const localPaiement = await offlinePaiements.getById(local_id);
-      if (localPaiement) {
-        await offlinePaiements.markAsSynced(local_id, null, true);
-        console.log(`✅ Paiement ${local_id} marqué comme synchronisé (créé automatiquement par le serveur)`);
-      }
-    } catch (error) {
-      console.log(`ℹ️ Paiement ${local_id} non trouvé localement`);
-    }
+    // Les paiements sont déjà synchronisés lors de la synchronisation du passage
+    // On marque simplement l'item de la queue comme synchronisé
     
     return {
       success: true,
       local_id,
       server_id: null,
-      message: 'Paiement synchronisé (créé automatiquement par le serveur lors de la création du passage)',
+      message: 'Paiement synchronisé (créé automatiquement lors de la création du passage)',
     };
   }
 
@@ -393,7 +452,7 @@ class SyncService {
           result = await this.syncPassage(queueItem);
           break;
         case 'paiements':
-          result = await this.syncPaiement(queueItem); // Simple marquage comme synchronisé
+          result = await this.syncPaiement(queueItem);
           break;
         default:
           throw new Error(`Type d'entité non supporté: ${entity}`);

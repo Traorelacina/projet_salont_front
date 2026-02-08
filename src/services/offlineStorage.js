@@ -77,6 +77,23 @@ const generateTempId = (prefix = 'temp') => {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 };
 
+// ✅ NOUVEAU : Générer un numéro de reçu offline au format REC-YYYYMMDD-XXXXXX
+const generateOfflineNumeroRecu = () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  
+  // Générer un ID unique de 6 caractères (alphanumérique majuscule)
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let uniqueId = '';
+  for (let i = 0; i < 6; i++) {
+    uniqueId += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  
+  return `REC-${year}${month}${day}-${uniqueId}`;
+};
+
 // Générer un code client hors ligne
 const generateOfflineClientCode = async () => {
   const db = await initDB();
@@ -260,18 +277,17 @@ export const offlineClients = {
     return allClients.find(c => c.temp_id === tempId);
   },
 
-  // ✅ CORRECTION MAJEURE : Supprimer un client avec transaction unique
+  // Supprimer un client avec transaction unique
   async delete(id) {
     try {
       const db = await initDB();
       
-      // ✅ Récupérer le client (peut ne pas exister)
+      // Récupérer le client (peut ne pas exister)
       const client = await db.get('clients', id);
       
       if (!client) {
         console.log('⚠️ Client non trouvé en local, ID:', id);
         
-        // ✅ NOUVEAU : Retourner un succès même si le client n'existe pas
         return {
           success: true,
           client_id: id,
@@ -282,7 +298,7 @@ export const offlineClients = {
         };
       }
 
-      // ✅ CRÉER UNE SEULE TRANSACTION pour toutes les opérations
+      // Créer une seule transaction pour toutes les opérations
       const tx = db.transaction(['clients', 'passages', 'paiements'], 'readwrite');
       const clientsStore = tx.objectStore('clients');
       const passagesStore = tx.objectStore('passages');
@@ -313,7 +329,7 @@ export const offlineClients = {
       // Supprimer le client
       await clientsStore.delete(id);
       
-      // ✅ Attendre la fin de la transaction
+      // Attendre la fin de la transaction
       await tx.done;
 
       // Ajouter à la file de synchronisation si le client était synchronisé
@@ -449,6 +465,89 @@ export const offlinePassages = {
     }
   },
 
+  // Marquer un passage comme synchronisé
+  async markAsSynced(localId, serverId = null, autoCreated = false) {
+    const db = await initDB();
+    
+    try {
+      const tx = db.transaction('paiements', 'readwrite');
+      const store = tx.objectStore('paiements');
+      
+      const paiement = await store.get(localId);
+      
+      if (!paiement) {
+        console.warn(`⚠️ Paiement ${localId} non trouvé pour marquage`);
+        return null;
+      }
+      
+      // Si le paiement a été créé automatiquement par le serveur,
+      // on doit récupérer le paiement depuis le serveur pour obtenir son ID
+      if (autoCreated && paiement.passage_id) {
+        console.log(`🔍 Recherche du paiement serveur pour le passage ${paiement.passage_id}`);
+        
+        // Chercher le passage qui a le server_id
+        const passageTx = db.transaction('passages', 'readonly');
+        const passageStore = passageTx.objectStore('passages');
+        const passage = await passageStore.get(paiement.passage_id);
+        await passageTx.done;
+        
+        if (passage && passage.server_id) {
+          // Le passage a été synchronisé, on peut maintenant récupérer le paiement du serveur
+          try {
+            const paiementsAPI = require('./api').paiementsAPI;
+            const response = await paiementsAPI.getByPassage(passage.server_id);
+            
+            if (response.data && response.data.data) {
+              const serverPaiement = Array.isArray(response.data.data) 
+                ? response.data.data[0] 
+                : response.data.data;
+              
+              if (serverPaiement && serverPaiement.id) {
+                console.log(`✅ Paiement serveur trouvé: ID ${serverPaiement.id}`);
+                serverId = serverPaiement.id;
+              }
+            }
+          } catch (error) {
+            console.warn('⚠️ Impossible de récupérer le paiement serveur:', error);
+          }
+        }
+      }
+      
+      const updatedPaiement = {
+        ...paiement,
+        synced: true,
+        offline_created: false,
+        updated_at: new Date().toISOString(),
+      };
+      
+      // Ajouter le server_id si disponible
+      if (serverId) {
+        updatedPaiement.server_id = serverId;
+      }
+      
+      await store.put(updatedPaiement);
+      await tx.done;
+      
+      console.log(`✅ Paiement ${localId} marqué comme synchronisé${serverId ? ` (server_id: ${serverId})` : ''}`);
+      
+      return updatedPaiement;
+    } catch (error) {
+      console.error(`❌ Erreur marquage paiement ${localId}:`, error);
+      throw error;
+    }
+  },
+  
+  // Récupérer le paiement par passage_id
+  async getByPassageId(passageId) {
+    const db = await initDB();
+    const tx = db.transaction('paiements', 'readonly');
+    const store = tx.objectStore('paiements');
+    const allPaiements = await store.getAll();
+    await tx.done;
+    
+    return allPaiements.find(p => p.passage_id === passageId);
+  },
+
   // Récupérer tous les passages
   async getAll(filters = {}) {
     const db = await initDB();
@@ -538,7 +637,7 @@ export const offlinePassages = {
     }
   },
 
-  // ✅ CORRECTION : Supprimer un passage avec transaction unique
+  // Supprimer un passage avec transaction unique
   async delete(id) {
     try {
       const db = await initDB();
@@ -546,7 +645,7 @@ export const offlinePassages = {
       const passage = await db.get('passages', id);
       if (!passage) throw new Error('Passage non trouvé');
       
-      // ✅ Transaction unique
+      // Transaction unique
       const tx = db.transaction(['passages', 'clients', 'paiements'], 'readwrite');
       const passagesStore = tx.objectStore('passages');
       const clientsStore = tx.objectStore('clients');
@@ -662,17 +761,20 @@ export const offlineCoiffeurs = {
   },
 };
 
-// PAIEMENTS - Opérations hors ligne
+// ✅ PAIEMENTS - Opérations hors ligne avec génération du numero_recu
 export const offlinePaiements = {
   async create(paiementData) {
     try {
       const db = await initDB();
       
       const tempId = generateTempId('paiement');
+      // ✅ Générer le numéro de reçu offline
+      const numeroRecu = generateOfflineNumeroRecu();
       
       const paiement = {
         ...paiementData,
         temp_id: tempId,
+        numero_recu: numeroRecu, // ✅ AJOUT du numéro de reçu
         synced: false,
         created_at: new Date().toISOString(),
         offline_created: true,
@@ -693,6 +795,8 @@ export const offlinePaiements = {
         local_id: id,
       });
       
+      console.log(`✅ Paiement créé hors ligne avec numéro de reçu: ${numeroRecu}`);
+      
       return { ...paiement, id };
     } catch (error) {
       console.error('Erreur création paiement offline:', error);
@@ -712,6 +816,19 @@ export const offlinePaiements = {
     const paiement = await db.get('paiements', localId);
     
     if (paiement) {
+      // ✅ Récupérer le numero_recu du serveur si disponible
+      try {
+        const { paiementsAPI } = await import('./api');
+        const response = await paiementsAPI.getOne(serverId);
+        
+        if (response.data.success && response.data.data.numero_recu) {
+          paiement.numero_recu = response.data.data.numero_recu;
+          console.log(`✅ Numéro de reçu mis à jour depuis le serveur: ${paiement.numero_recu}`);
+        }
+      } catch (error) {
+        console.warn('⚠️ Impossible de récupérer le numéro de reçu du serveur:', error);
+      }
+      
       paiement.synced = true;
       paiement.server_id = serverId;
       paiement.offline_created = false;

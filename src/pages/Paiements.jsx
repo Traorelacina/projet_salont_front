@@ -28,6 +28,7 @@ import {
   Fade,
   Zoom,
   CircularProgress,
+  Tooltip,
 } from '@mui/material';
 import { DataGrid } from '@mui/x-data-grid';
 import { 
@@ -44,6 +45,13 @@ import {
   CloudDone,
   WifiOff,
   Close,
+  CreditCard,
+  Phone,
+  AccountBalance,
+  AttachMoney,
+  MoreHoriz,
+  CleaningServices,
+  DeleteSweep,
 } from '@mui/icons-material';
 import { paiementsAPI, passagesAPI } from '../services/api';
 import { format } from 'date-fns';
@@ -71,6 +79,7 @@ const Paiements = () => {
   });
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
 
   // États pour les notifications
   const [notification, setNotification] = useState({
@@ -112,7 +121,50 @@ const Paiements = () => {
     setNotification(prev => ({ ...prev, open: false }));
   }, []);
 
-  // ✅ CORRECTION PRINCIPALE : Chargement des données avec enrichissement des infos client
+  // ✅ Fonction pour nettoyer les données locales orphelines
+  const handleCleanLocalData = useCallback(async () => {
+    if (!window.confirm(
+      'Voulez-vous supprimer tous les paiements locaux qui n\'ont pas été synchronisés ?\n\n' +
+      'Cela supprimera uniquement les paiements créés hors ligne qui ne sont pas encore sur le serveur.\n\n' +
+      'Cette action est irréversible.'
+    )) {
+      return;
+    }
+
+    try {
+      setCleaning(true);
+      
+      const db = await initDB();
+      const tx = db.transaction('paiements', 'readwrite');
+      const store = tx.objectStore('paiements');
+      const allPaiements = await store.getAll();
+      
+      let deletedCount = 0;
+      
+      for (const paiement of allPaiements) {
+        // Supprimer si non synchronisé OU si pas de server_id
+        if (!paiement.synced || !paiement.server_id) {
+          await store.delete(paiement.id);
+          deletedCount++;
+          console.log(`🗑️ Paiement local ${paiement.id} supprimé`);
+        }
+      }
+      
+      await tx.done;
+      
+      showNotification(`${deletedCount} paiement(s) local(aux) supprimé(s)`, 'success');
+      
+      // Recharger les données
+      loadData();
+    } catch (error) {
+      console.error('❌ Erreur nettoyage données locales:', error);
+      showNotification('Erreur lors du nettoyage des données locales', 'error');
+    } finally {
+      setCleaning(false);
+    }
+  }, [showNotification]);
+
+  // ✅ CORRECTION PRINCIPALE : Chargement des données avec gestion correcte de la synchronisation
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
@@ -120,40 +172,7 @@ const Paiements = () => {
       let allPaiements = [];
       let allPassages = [];
       
-      // ✅ Charger les paiements locaux d'abord ET enrichir avec client
-      try {
-        const db = await initDB();
-        
-        // Récupérer tous les paiements locaux
-        const localPaiements = await db.getAll('paiements');
-        
-        // ✅ NOUVEAU : Enrichir CHAQUE paiement avec les infos du passage ET du client
-        for (const paiement of localPaiements) {
-          if (paiement.passage_id) {
-            // Récupérer le passage
-            const passage = await db.get('passages', paiement.passage_id);
-            if (passage) {
-              // Récupérer le client du passage
-              if (passage.client_id) {
-                const client = await db.get('clients', passage.client_id);
-                paiement.passage = {
-                  ...passage,
-                  client: client || null,
-                };
-                // ✅ IMPORTANT : Ajouter aussi le client directement au paiement
-                paiement.client = client || null;
-              }
-            }
-          }
-        }
-        
-        allPaiements = localPaiements;
-        console.log(`📱 ${allPaiements.length} paiements chargés localement (avec clients enrichis)`);
-      } catch (localError) {
-        console.error('Erreur chargement paiements locaux:', localError);
-      }
-      
-      // ✅ Charger depuis le serveur si en ligne
+      // ✅ ÉTAPE 1 : Charger depuis le serveur en priorité si en ligne
       if (isOnline) {
         try {
           const [paiementsRes, passagesRes] = await Promise.all([
@@ -173,59 +192,162 @@ const Paiements = () => {
           
           console.log(`🌐 ${paiementsData.length} paiements récupérés du serveur`);
           
-          // ✅ Fusionner les paiements serveur avec les locaux
+          // ✅ ÉTAPE 2 : Synchroniser avec IndexedDB
+          const db = await initDB();
+          const tx = db.transaction(['paiements', 'passages', 'clients'], 'readwrite');
+          const paiementsStore = tx.objectStore('paiements');
+          const passagesStore = tx.objectStore('passages');
+          const clientsStore = tx.objectStore('clients');
+          
+          // Récupérer tous les paiements locaux
+          const localPaiements = await paiementsStore.getAll();
+          
+          // IDs des paiements sur le serveur
+          const serverPaiementIds = new Set(paiementsData.map(p => p.id));
+          
+          // ✅ ÉTAPE 3 : Supprimer localement les paiements qui n'existent plus sur le serveur
+          let deletedCount = 0;
+          for (const localPaiement of localPaiements) {
+            // Si le paiement local a un server_id ET que ce server_id n'existe plus sur le serveur
+            if (localPaiement.server_id && localPaiement.synced && !serverPaiementIds.has(localPaiement.server_id)) {
+              console.log(`🗑️ Suppression locale du paiement ${localPaiement.id} (supprimé sur serveur)`);
+              await paiementsStore.delete(localPaiement.id);
+              deletedCount++;
+            }
+          }
+          
+          if (deletedCount > 0) {
+            console.log(`✅ ${deletedCount} paiement(s) supprimé(s) localement (supprimés sur serveur)`);
+          }
+          
+          // Récupérer à nouveau les paiements locaux après suppression
+          const updatedLocalPaiements = await paiementsStore.getAll();
+          
+          // ✅ ÉTAPE 4 : Traiter chaque paiement du serveur
           for (const serverPaiement of paiementsData) {
-            // Chercher si ce paiement existe déjà localement
-            const existingLocal = allPaiements.find(p => 
+            // Enrichir avec les infos du passage et du client
+            let enrichedPaiement = {
+              ...serverPaiement,
+              synced: true,
+              offline_created: false,
+            };
+            
+            // Chercher le paiement local correspondant
+            const localPaiement = updatedLocalPaiements.find(p => 
               p.server_id === serverPaiement.id || p.id === serverPaiement.id
             );
             
-            if (!existingLocal) {
-              // Nouveau paiement du serveur - l'ajouter
-              allPaiements.push({
+            if (localPaiement) {
+              // Mettre à jour le paiement local avec les données du serveur
+              enrichedPaiement = {
+                ...localPaiement,
                 ...serverPaiement,
+                id: localPaiement.id, // Garder l'ID local
+                server_id: serverPaiement.id,
                 synced: true,
                 offline_created: false,
-              });
-            } else if (!existingLocal.synced) {
-              // ✅ CORRECTION : Mettre à jour le paiement local avec les données serveur
-              const index = allPaiements.findIndex(p => p.id === existingLocal.id);
-              if (index !== -1) {
-                allPaiements[index] = {
-                  ...existingLocal,
-                  ...serverPaiement,
-                  id: existingLocal.id, // Garder l'ID local
-                  server_id: serverPaiement.id,
-                  synced: true,
-                  offline_created: false,
-                };
-              }
+                passage_id: localPaiement.passage_id, // Garder le passage_id local
+              };
               
-              // ✅ Mettre à jour dans IndexedDB aussi
-              try {
-                const db = await initDB();
-                const tx = db.transaction('paiements', 'readwrite');
-                await tx.objectStore('paiements').put({
-                  ...existingLocal,
-                  ...serverPaiement,
-                  id: existingLocal.id,
-                  server_id: serverPaiement.id,
-                  synced: true,
-                  offline_created: false,
-                });
-                await tx.done;
-                console.log(`✅ Paiement ${existingLocal.id} mis à jour et synchronisé`);
-              } catch (updateError) {
-                console.warn('⚠️ Erreur mise à jour paiement local:', updateError);
+              await paiementsStore.put(enrichedPaiement);
+              console.log(`✅ Paiement ${localPaiement.id} synchronisé avec serveur`);
+            } else {
+              // Nouveau paiement du serveur - l'ajouter localement
+              const newLocalPaiement = {
+                ...enrichedPaiement,
+                server_id: serverPaiement.id,
+              };
+              delete newLocalPaiement.id;
+              await paiementsStore.add(newLocalPaiement);
+              console.log(`➕ Nouveau paiement du serveur ajouté localement`);
+            }
+            
+            // Enrichir avec passage et client
+            if (enrichedPaiement.passage_id) {
+              const passage = await passagesStore.get(enrichedPaiement.passage_id);
+              if (passage && passage.client_id) {
+                const client = await clientsStore.get(passage.client_id);
+                enrichedPaiement.passage = {
+                  ...passage,
+                  client: client || null,
+                };
+                enrichedPaiement.client = client || null;
               }
             }
+            
+            allPaiements.push(enrichedPaiement);
           }
+          
+          // ✅ ÉTAPE 5 : Ajouter les paiements locaux non synchronisés
+          const finalLocalPaiements = await paiementsStore.getAll();
+          for (const localPaiement of finalLocalPaiements) {
+            if (!localPaiement.synced || !localPaiement.server_id) {
+              // Enrichir avec passage et client
+              if (localPaiement.passage_id) {
+                const passage = await passagesStore.get(localPaiement.passage_id);
+                if (passage && passage.client_id) {
+                  const client = await clientsStore.get(passage.client_id);
+                  localPaiement.passage = {
+                    ...passage,
+                    client: client || null,
+                  };
+                  localPaiement.client = client || null;
+                }
+              }
+              
+              allPaiements.push(localPaiement);
+            }
+          }
+          
+          await tx.done;
+          
         } catch (serverError) {
           console.warn('⚠️ Impossible de charger depuis le serveur:', serverError);
           showNotification('Données chargées en mode hors ligne', 'info');
+          
+          // Fallback: charger uniquement les données locales
+          const db = await initDB();
+          const localPaiements = await db.getAll('paiements');
+          
+          for (const paiement of localPaiements) {
+            if (paiement.passage_id) {
+              const passage = await db.get('passages', paiement.passage_id);
+              if (passage && passage.client_id) {
+                const client = await db.get('clients', passage.client_id);
+                paiement.passage = {
+                  ...passage,
+                  client: client || null,
+                };
+                paiement.client = client || null;
+              }
+            }
+          }
+          
+          allPaiements = localPaiements;
         }
       } else {
+        // ✅ MODE HORS LIGNE : Charger uniquement les données locales
         showNotification('Mode hors ligne activé', 'info');
+        
+        const db = await initDB();
+        const localPaiements = await db.getAll('paiements');
+        
+        for (const paiement of localPaiements) {
+          if (paiement.passage_id) {
+            const passage = await db.get('passages', paiement.passage_id);
+            if (passage && passage.client_id) {
+              const client = await db.get('clients', passage.client_id);
+              paiement.passage = {
+                ...passage,
+                client: client || null,
+              };
+              paiement.client = client || null;
+            }
+          }
+        }
+        
+        allPaiements = localPaiements;
+        console.log(`📱 ${allPaiements.length} paiements chargés localement`);
       }
       
       // Trier par date décroissante
@@ -381,27 +503,87 @@ const Paiements = () => {
     }
   }, [formData, isOnline, handleCloseDialog, loadData, showNotification]);
 
-  const handleCancel = useCallback(async (id) => {
+  // ✅ CORRECTION : Annuler un paiement avec gestion ID local/serveur
+  const handleCancel = useCallback(async (paiement) => {
     if (window.confirm('Êtes-vous sûr de vouloir annuler ce paiement ?')) {
       try {
-        await paiementsAPI.cancel(id);
-        showNotification('Paiement annulé avec succès');
-        loadData();
+        const serverId = paiement.server_id || paiement.id;
+        const isSync = paiement.synced === true && paiement.server_id;
+        
+        if (!isSync) {
+          showNotification('Ce paiement n\'est pas encore synchronisé. Veuillez attendre la synchronisation.', 'warning');
+          return;
+        }
+        
+        if (isOnline) {
+          await paiementsAPI.cancel(serverId);
+          showNotification('Paiement annulé avec succès');
+          loadData();
+        } else {
+          showNotification('Impossible d\'annuler en mode hors ligne', 'error');
+        }
       } catch (error) {
         console.error('Error canceling payment:', error);
-        const errorMessage = 'Erreur lors de l\'annulation du paiement';
+        const errorMessage = error.response?.data?.message || 'Erreur lors de l\'annulation du paiement';
         setError(errorMessage);
         showNotification(errorMessage, 'error');
       }
     }
-  }, [loadData, showNotification]);
+  }, [isOnline, loadData, showNotification]);
 
-  const handleDelete = useCallback(async (id) => {
+  // ✅ CORRECTION : Supprimer un paiement avec gestion ID local/serveur
+  const handleDelete = useCallback(async (paiement) => {
     if (window.confirm('Êtes-vous sûr de vouloir supprimer définitivement ce paiement ?\n\nAttention : Cette action est irréversible !')) {
       try {
-        await paiementsAPI.delete(id);
-        showNotification('Paiement supprimé avec succès');
+        const localId = paiement.id;
+        const serverId = paiement.server_id;
+        const isSync = paiement.synced === true && serverId;
+        
+        let serverDeleted = false;
+        
+        // ✅ ÉTAPE 1 : Supprimer sur le serveur si synchronisé
+        if (isSync && isOnline) {
+          try {
+            console.log(`🌐 Suppression paiement sur serveur: ${serverId}`);
+            await paiementsAPI.delete(serverId);
+            serverDeleted = true;
+            console.log(`✅ Paiement supprimé sur serveur: ${serverId}`);
+          } catch (serverError) {
+            console.error('❌ Erreur suppression serveur:', serverError);
+            
+            // Si 404, le paiement est déjà supprimé sur le serveur
+            if (serverError.response?.status === 404) {
+              console.log('ℹ️ Paiement déjà supprimé sur le serveur');
+              serverDeleted = true;
+            } else {
+              throw serverError;
+            }
+          }
+        } else if (isSync && !isOnline) {
+          // Paiement synchronisé mais hors ligne - on ne peut pas le supprimer
+          showNotification('Impossible de supprimer un paiement synchronisé en mode hors ligne', 'error');
+          return;
+        }
+        
+        // ✅ ÉTAPE 2 : Supprimer localement
+        try {
+          const db = await initDB();
+          const tx = db.transaction('paiements', 'readwrite');
+          await tx.objectStore('paiements').delete(localId);
+          await tx.done;
+          console.log(`✅ Paiement supprimé localement: ${localId}`);
+        } catch (localError) {
+          console.error('❌ Erreur suppression locale:', localError);
+        }
+        
+        // ✅ ÉTAPE 3 : Recharger les données
         loadData();
+        
+        const message = serverDeleted
+          ? 'Paiement supprimé du serveur et localement'
+          : 'Paiement supprimé localement';
+        
+        showNotification(message, 'success');
       } catch (error) {
         console.error('Error deleting payment:', error);
         const errorMessage = error.response?.data?.message || 'Erreur lors de la suppression du paiement';
@@ -409,17 +591,50 @@ const Paiements = () => {
         showNotification(errorMessage, 'error');
       }
     }
+  }, [isOnline, loadData, showNotification]);
+
+  // ✅ Supprimer un paiement local uniquement
+  const handleDeleteLocal = useCallback(async (paiement) => {
+    if (window.confirm('Voulez-vous supprimer ce paiement local ?\n\nCe paiement n\'a pas encore été synchronisé avec le serveur.')) {
+      try {
+        const db = await initDB();
+        const tx = db.transaction('paiements', 'readwrite');
+        await tx.objectStore('paiements').delete(paiement.id);
+        await tx.done;
+        
+        console.log(`✅ Paiement local ${paiement.id} supprimé`);
+        showNotification('Paiement local supprimé avec succès');
+        loadData();
+      } catch (error) {
+        console.error('❌ Erreur suppression paiement local:', error);
+        showNotification('Erreur lors de la suppression du paiement local', 'error');
+      }
+    }
   }, [loadData, showNotification]);
 
-  const handleDownloadReceipt = useCallback(async (id) => {
+  // ✅ CORRECTION : Télécharger le reçu avec gestion ID local/serveur
+  const handleDownloadReceipt = useCallback(async (paiement) => {
     try {
-      const response = await paiementsAPI.getReceipt(id);
+      const serverId = paiement.server_id || paiement.id;
+      const isSync = paiement.synced === true && paiement.server_id;
+      
+      if (!isSync) {
+        showNotification('Ce paiement n\'est pas encore synchronisé. Veuillez attendre la synchronisation.', 'warning');
+        return;
+      }
+      
+      if (!isOnline) {
+        showNotification('Impossible de télécharger le reçu en mode hors ligne', 'error');
+        return;
+      }
+      
+      const response = await paiementsAPI.getReceipt(serverId);
       
       const blob = new Blob([response.data], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `recu-${id}.pdf`;
+      link.download = `recu-${serverId}.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -432,11 +647,25 @@ const Paiements = () => {
       setError(errorMessage);
       showNotification(errorMessage, 'error');
     }
-  }, [showNotification]);
+  }, [isOnline, showNotification]);
 
-  const handleViewReceipt = useCallback(async (id) => {
+  // ✅ CORRECTION : Voir le reçu avec gestion ID local/serveur
+  const handleViewReceipt = useCallback(async (paiement) => {
     try {
-      const response = await paiementsAPI.getReceiptData(id);
+      const serverId = paiement.server_id || paiement.id;
+      const isSync = paiement.synced === true && paiement.server_id;
+      
+      if (!isSync) {
+        showNotification('Ce paiement n\'est pas encore synchronisé. Veuillez attendre la synchronisation.', 'warning');
+        return;
+      }
+      
+      if (!isOnline) {
+        showNotification('Impossible de voir le reçu en mode hors ligne', 'error');
+        return;
+      }
+      
+      const response = await paiementsAPI.getReceiptData(serverId);
       setReceiptData(response.data.data);
       setOpenReceiptDialog(true);
     } catch (error) {
@@ -445,12 +674,13 @@ const Paiements = () => {
       setError(errorMessage);
       showNotification(errorMessage, 'error');
     }
-  }, [showNotification]);
+  }, [isOnline, showNotification]);
 
   const handlePrintReceipt = useCallback(() => {
     window.print();
   }, []);
 
+  // ✅ CORRECTION : Méthodes de paiement avec vraies icônes
   const getMethodeLabel = useCallback((methode) => {
     const labels = {
       especes: 'Espèces',
@@ -461,6 +691,18 @@ const Paiements = () => {
       autre: 'Autre',
     };
     return labels[methode] || methode;
+  }, []);
+
+  const getMethodeIcon = useCallback((methode) => {
+    const icons = {
+      especes: <AttachMoney fontSize="small" />,
+      carte: <CreditCard fontSize="small" />,
+      mobile: <Phone fontSize="small" />,
+      mobile_money: <Phone fontSize="small" />,
+      cheque: <AccountBalance fontSize="small" />,
+      autre: <MoreHoriz fontSize="small" />,
+    };
+    return icons[methode] || <MoreHoriz fontSize="small" />;
   }, []);
 
   const getStatutColor = useCallback((statut) => {
@@ -474,7 +716,7 @@ const Paiements = () => {
     return colors[statut] || 'default';
   }, []);
 
-  // ✅ CORRECTION DES COLONNES
+  // ✅ CORRECTION DES COLONNES avec bouton suppression locale
   const columns = useMemo(() => [
     { 
       field: 'id', 
@@ -506,15 +748,11 @@ const Paiements = () => {
         const row = params.row;
         let clientName = '-';
         
-        // ✅ CORRECTION : Essayer plusieurs sources pour le nom du client
         if (row.client?.prenom && row.client?.nom) {
-          // Client directement attaché au paiement (mode hors ligne enrichi)
           clientName = `${row.client.prenom} ${row.client.nom}`;
         } else if (row.passage?.client?.prenom && row.passage?.client?.nom) {
-          // Client via le passage
           clientName = `${row.passage.client.prenom} ${row.passage.client.nom}`;
         } else if (row.nom_client) {
-          // Nom du client depuis le serveur
           clientName = row.nom_client;
         }
         
@@ -541,6 +779,7 @@ const Paiements = () => {
       width: 150,
       renderCell: (params) => (
         <Chip 
+          icon={getMethodeIcon(params.value)}
           label={getMethodeLabel(params.value)}
           size="small"
           variant="outlined"
@@ -572,7 +811,6 @@ const Paiements = () => {
       headerAlign: 'center',
       align: 'center',
       renderCell: (params) => {
-        // ✅ CORRECTION : Vérifier si synced est true (pas juste "pas false")
         const synced = params.row?.synced === true;
         return synced ? (
           <CloudDone color="success" fontSize="small" />
@@ -608,18 +846,17 @@ const Paiements = () => {
       headerAlign: 'center',
       align: 'center',
       renderCell: (params) => {
-        // ✅ CORRECTION : Utiliser synced === true au lieu de !== false
         const synced = params.row?.synced === true;
-        const serverId = params.row.server_id || (synced ? params.row.id : null);
+        const serverId = params.row.server_id;
         
         return (
           <Box sx={{ display: 'flex', gap: 0.5 }}>
-            {/* ✅ CORRECTION : Afficher les actions seulement si synchronisé */}
             {synced && serverId ? (
+              // ✅ Paiement synchronisé - Actions normales
               <>
                 <IconButton 
                   size="small" 
-                  onClick={() => handleViewReceipt(serverId)}
+                  onClick={() => handleViewReceipt(params.row)}
                   color="info"
                   title="Voir le reçu"
                   sx={{
@@ -633,7 +870,7 @@ const Paiements = () => {
                 </IconButton>
                 <IconButton 
                   size="small" 
-                  onClick={() => handleDownloadReceipt(serverId)}
+                  onClick={() => handleDownloadReceipt(params.row)}
                   color="primary"
                   title="Télécharger le reçu PDF"
                   sx={{
@@ -648,7 +885,7 @@ const Paiements = () => {
                 {(params.row.statut === 'paye' || params.row.statut === 'valide' || !params.row.statut) && (
                   <IconButton 
                     size="small" 
-                    onClick={() => handleCancel(serverId)} 
+                    onClick={() => handleCancel(params.row)} 
                     color="warning"
                     title="Annuler le paiement"
                     sx={{
@@ -663,7 +900,7 @@ const Paiements = () => {
                 )}
                 <IconButton 
                   size="small" 
-                  onClick={() => handleDelete(serverId)} 
+                  onClick={() => handleDelete(params.row)} 
                   color="error"
                   title="Supprimer le paiement"
                   sx={{
@@ -677,19 +914,28 @@ const Paiements = () => {
                 </IconButton>
               </>
             ) : (
-              <Chip 
-                icon={<WifiOff />}
-                label="En attente" 
-                color="warning"
-                size="small"
-                sx={{ fontSize: '0.7rem' }}
-              />
+              // ✅ Paiement local - Bouton de suppression locale
+              <Tooltip title="Supprimer ce paiement local">
+                <IconButton 
+                  size="small" 
+                  onClick={() => handleDeleteLocal(params.row)} 
+                  color="error"
+                  sx={{
+                    transition: 'all 0.2s',
+                    '&:hover': {
+                      transform: 'scale(1.1)',
+                    }
+                  }}
+                >
+                  <DeleteSweep fontSize="small" />
+                </IconButton>
+              </Tooltip>
             )}
           </Box>
         );
       },
     },
-  ], [getMethodeLabel, getStatutColor, handleViewReceipt, handleDownloadReceipt, handleCancel, handleDelete]);
+  ], [getMethodeLabel, getMethodeIcon, getStatutColor, handleViewReceipt, handleDownloadReceipt, handleCancel, handleDelete, handleDeleteLocal]);
 
   // Filtrer les passages impayés - optimisé avec useMemo
   const unpaidPassages = useMemo(() => 
@@ -697,6 +943,11 @@ const Paiements = () => {
       ? passages.filter(p => !p.paiement && !p.est_gratuit)
       : []
   , [passages]);
+
+  // ✅ Compter les paiements locaux non synchronisés
+  const localPaiementsCount = useMemo(() => 
+    paiements.filter(p => !p.synced || !p.server_id).length
+  , [paiements]);
 
   return (
     <Box sx={{ p: 3 }}>
@@ -707,6 +958,22 @@ const Paiements = () => {
           </Typography>
           <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
             <OfflineSyncIndicator />
+            
+            {/* ✅ Bouton de nettoyage des données locales */}
+            {localPaiementsCount > 0 && (
+              <Tooltip title="Supprimer tous les paiements locaux non synchronisés">
+                <Button
+                  variant="outlined"
+                  color="warning"
+                  startIcon={cleaning ? <CircularProgress size={20} /> : <CleaningServices />}
+                  onClick={handleCleanLocalData}
+                  disabled={cleaning}
+                >
+                  Nettoyer locaux ({localPaiementsCount})
+                </Button>
+              </Tooltip>
+            )}
+            
             <Button
               variant="contained"
               startIcon={<Add />}
@@ -742,6 +1009,8 @@ const Paiements = () => {
           </Alert>
         </Fade>
       )}
+
+      
 
       {error && (
         <Fade in={true}>
@@ -801,7 +1070,6 @@ const Paiements = () => {
           </Box>
         </DialogTitle>
         <DialogContent>
-          {/* Alerte mode hors ligne */}
           {!isOnline && (
             <Alert severity="info" sx={{ mb: 2 }} icon={<WifiOff />}>
               Mode hors ligne : Le paiement sera créé localement et synchronisé automatiquement.
@@ -862,11 +1130,36 @@ const Paiements = () => {
                   onChange={handleChange}
                   label="Méthode de paiement"
                 >
-                  <MenuItem value="especes">💵 Espèces</MenuItem>
-                  <MenuItem value="carte">💳 Carte bancaire</MenuItem>
-                  <MenuItem value="mobile_money">📱 Mobile Money</MenuItem>
-                  <MenuItem value="cheque">📝 Chèque</MenuItem>
-                  <MenuItem value="autre">📋 Autre</MenuItem>
+                  <MenuItem value="especes">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <AttachMoney fontSize="small" />
+                      Espèces
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="carte">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <CreditCard fontSize="small" />
+                      Carte bancaire
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="mobile_money">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Phone fontSize="small" />
+                      Mobile Money
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="cheque">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <AccountBalance fontSize="small" />
+                      Chèque
+                    </Box>
+                  </MenuItem>
+                  <MenuItem value="autre">
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <MoreHoriz fontSize="small" />
+                      Autre
+                    </Box>
+                  </MenuItem>
                 </Select>
               </FormControl>
             </Grid>
@@ -923,17 +1216,6 @@ const Paiements = () => {
               >
                 <Print />
               </IconButton>
-              <IconButton 
-                onClick={() => handleDownloadReceipt(receiptData?.numero_recu)}
-                sx={{
-                  transition: 'all 0.2s',
-                  '&:hover': {
-                    transform: 'scale(1.1)',
-                  }
-                }}
-              >
-                <Download />
-              </IconButton>
               <IconButton onClick={() => setOpenReceiptDialog(false)}>
                 <Close />
               </IconButton>
@@ -944,7 +1226,6 @@ const Paiements = () => {
           {receiptData && (
             <Fade in={true}>
               <Paper elevation={0} sx={{ p: 3, border: '1px solid', borderColor: 'divider' }}>
-                {/* En-tête du salon */}
                 <Box sx={{ textAlign: 'center', mb: 3 }}>
                   <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
                     {receiptData.salon?.nom || 'Salon de Coiffure'}
@@ -959,7 +1240,6 @@ const Paiements = () => {
 
                 <Divider sx={{ my: 2 }} />
 
-                {/* Informations du reçu */}
                 <Grid container spacing={2} sx={{ mb: 3 }}>
                   <Grid item xs={6}>
                     <Typography variant="body2" color="text.secondary">
@@ -979,7 +1259,6 @@ const Paiements = () => {
                   </Grid>
                 </Grid>
 
-                {/* Informations client */}
                 <Box sx={{ bgcolor: 'grey.50', p: 2, borderRadius: 1, mb: 3 }}>
                   <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
                     Client
@@ -992,7 +1271,6 @@ const Paiements = () => {
                   </Typography>
                 </Box>
 
-                {/* Prestations */}
                 <TableContainer sx={{ mb: 3 }}>
                   <Table size="small">
                     <TableHead>
@@ -1020,7 +1298,6 @@ const Paiements = () => {
 
                 <Divider sx={{ my: 2 }} />
 
-                {/* Total */}
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
                   <Typography variant="body1">Montant total</Typography>
                   <Typography variant="h6" sx={{ fontWeight: 700 }}>
@@ -1038,6 +1315,7 @@ const Paiements = () => {
                 <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
                   <Typography variant="body1">Mode de paiement</Typography>
                   <Chip 
+                    icon={getMethodeIcon(receiptData.mode_paiement)}
                     label={getMethodeLabel(receiptData.mode_paiement)} 
                     size="small"
                     color="primary"
