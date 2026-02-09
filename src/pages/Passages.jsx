@@ -71,7 +71,7 @@ import {
   CloudDone,
   WifiOff,
   Print,
-  Download,
+ 
 } from '@mui/icons-material';
 import { prestationsAPI, usersAPI } from '../services/api';
 import { useOfflineClient } from '../hooks/useOfflineClient';
