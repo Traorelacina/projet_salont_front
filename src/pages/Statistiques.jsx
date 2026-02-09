@@ -47,7 +47,7 @@ import {
   PersonAdd,
   WorkOutline,
 } from '@mui/icons-material';
-
+import { statsAPI } from '../services/api';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
