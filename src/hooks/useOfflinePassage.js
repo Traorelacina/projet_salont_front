@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { offlinePassages, offlineClients, offlinePaiements, offlinePrestations, initDB } from '../services/offlineStorage';
 import { passagesAPI, paiementsAPI } from '../services/api';
 import { networkManager } from '../services/networkManager';
-import { syncService } from '../services/syncService';
+import { syncService } from '../services/syncservice';
 
 export const useOfflinePassage = () => {
   const [isOnline, setIsOnline] = useState(networkManager.getStatus());
