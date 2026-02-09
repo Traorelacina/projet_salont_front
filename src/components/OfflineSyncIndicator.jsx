@@ -30,7 +30,7 @@ import {
   Info,
 } from '@mui/icons-material';
 import { networkManager } from '../services/networkManager';
-import { syncService } from '../services/syncService';
+import { syncService } from '../services/syncservice';
 import { syncQueue, getOfflineStats } from '../services/offlineStorage';
 
 const OfflineSyncIndicator = () => {
