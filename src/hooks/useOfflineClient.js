@@ -8,7 +8,7 @@ import {
   initDB  
 } from '../services/offlineStorage';
 import { networkManager } from '../services/networkManager';
-import { syncService } from '../services/syncService';
+import { syncService } from '../services/syncservice';
 
 export const useOfflineClient = () => {
   const isOnline = networkManager.getStatus();
