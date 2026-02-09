@@ -143,7 +143,7 @@ const Login = () => {
           sx={{
             borderRadius: 2,
             borderWidth: 1,
-            fontWeight: 500,
+            fontWeight: 500,  
           }}
         />
       </Box>
@@ -184,7 +184,7 @@ const Login = () => {
             color: 'text.primary',
             letterSpacing: '-0.5px'
           }}>
-            Salon Pro
+            Salon Prof
           </Typography>
           <Typography variant="body2" sx={{ 
             color: 'text.secondary',
