@@ -60,7 +60,7 @@ import { useOfflinePassage } from '../hooks/useOfflinePassage';
 import { offlinePaiements, initDB } from '../services/offlineStorage';
 import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
 import { networkManager } from '../services/networkManager';
-import { syncService } from '../services/syncService';
+import { syncService } from '../services/syncservice';
 
 const Paiements = () => {
   const { isOnline } = useOfflinePassage();
