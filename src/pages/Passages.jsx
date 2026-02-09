@@ -80,7 +80,7 @@ import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import OfflineSyncIndicator from '../components/OfflineSyncIndicator';
 import { networkManager } from '../services/networkManager';
-import { syncService } from '../services/syncService';
+import { syncService } from '../services/syncservice';
 
 // Composant optimisé pour la ligne de résultat de recherche client
 const ClientSearchItem = React.memo(({ client, onSelect }) => (
