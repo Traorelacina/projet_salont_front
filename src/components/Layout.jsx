@@ -454,12 +454,6 @@ const Layout = ({ children }) => {
               </Box>
             </Box>
 
-            <MenuItem onClick={() => { navigate('/profile'); handleMenuClose(); }}>
-              <ListItemIcon sx={{ minWidth: 36 }}>
-                <Person fontSize="small" />
-              </ListItemIcon>
-              <ListItemText primary="Mon Profil" />
-            </MenuItem>
             
             <MenuItem onClick={() => { navigate('/settings'); handleMenuClose(); }}>
               <ListItemIcon sx={{ minWidth: 36 }}>
