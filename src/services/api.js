@@ -3,7 +3,7 @@ import axios from 'axios';
 import { networkManager } from './networkManager';
 import { getLocalAuth } from './localAuth';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_URL = import.meta.env.VITE_API_URL || 'https://inquisitive-loni-freelence-b0711b3a.koyeb.app/api';
 
 // Configuration axios principale
 const api = axios.create({
@@ -336,4 +336,4 @@ export const syncAPI = {
 };
 
 export { api };
-export {  syncOfflineRequests, startSyncService };
+export { syncOfflineRequests, startSyncService };
