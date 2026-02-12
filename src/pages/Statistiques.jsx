@@ -53,6 +53,17 @@ import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
 
+// 🔧 CORRECTION TEMPORAIRE: Fonction pour ajuster la date de fin
+// Cette fonction ajoute un jour à la date de fin pour s'assurer que le jour actuel
+// est inclus dans les rapports de période
+// TODO: Retirer cette fonction une fois que le backend sera corrigé pour utiliser <= au lieu de <
+const ajusterDateFin = (dateStr) => {
+  const date = new Date(dateStr);
+  // Ajouter un jour pour inclure toute la journée dans le filtre
+  date.setDate(date.getDate() + 1);
+  return format(date, 'yyyy-MM-dd');
+};
+
 // Carte de statistique améliorée avec animation
 const StatCard = ({ title, value, subtitle, icon, color, trend, delay = 0 }) => {
   const theme = useTheme();
@@ -296,11 +307,15 @@ const Statistiques = () => {
     }
   };
 
+  // 🔧 CORRIGÉ: Ajout de l'ajustement de date pour inclure le jour actuel
   const loadRapportPeriode = async () => {
     setLoading(true);
     setError('');
     try {
-      const response = await statsAPI.period(dateDebut, dateFin);
+      // Ajuster la date de fin pour inclure le jour complet
+      const dateFinAjustee = ajusterDateFin(dateFin);
+      
+      const response = await statsAPI.period(dateDebut, dateFinAjustee);
       if (response.data.success) {
         setRapportPeriode(response.data.data);
       }
@@ -312,13 +327,17 @@ const Statistiques = () => {
     }
   };
 
+  // 🔧 CORRIGÉ: Ajout de l'ajustement de date pour inclure le jour actuel
   const loadRapportPrestations = async () => {
     setLoading(true);
     setError('');
     try {
+      // Ajuster la date de fin pour inclure le jour complet
+      const dateFinAjustee = ajusterDateFin(dateFin);
+      
       const response = await statsAPI.prestations({ 
         date_debut: dateDebut, 
-        date_fin: dateFin 
+        date_fin: dateFinAjustee
       });
       
       if (response.data.success) {
@@ -348,13 +367,17 @@ const Statistiques = () => {
     }
   };
 
+  // 🔧 CORRIGÉ: Ajout de l'ajustement de date pour inclure le jour actuel
   const loadRapportCoiffeurs = async () => {
     setLoading(true);
     setError('');
     try {
+      // Ajuster la date de fin pour inclure le jour complet
+      const dateFinAjustee = ajusterDateFin(dateFin);
+      
       const response = await statsAPI.coiffeurs({
         date_debut: dateDebut,
-        date_fin: dateFin
+        date_fin: dateFinAjustee
       });
       
       if (response.data.success) {
