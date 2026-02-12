@@ -50,7 +50,7 @@ const Clients = () => {
   const [loading, setLoading] = useState(true);
   const [openDialog, setOpenDialog] = useState(false);
   const [openDeleteDialog, setOpenDeleteDialog] = useState(false);
-  const [openDataManager, setOpenDataManager] = useState(false); // ✅ NOUVEAU
+  const [openDataManager, setOpenDataManager] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientToDelete, setClientToDelete] = useState(null);
   const [formData, setFormData] = useState({
@@ -59,6 +59,7 @@ const Clients = () => {
     telephone: '',
   });
   const [error, setError] = useState('');
+  const [phoneError, setPhoneError] = useState(''); // ✅ NOUVEAU: Erreur spécifique au téléphone
   const [paginationModel, setPaginationModel] = useState({
     page: 0,
     pageSize: 10,
@@ -82,6 +83,29 @@ const Clients = () => {
   // Fermer la notification
   const handleCloseNotification = () => {
     setNotification(prev => ({ ...prev, open: false }));
+  };
+
+  // ✅ NOUVEAU: Vérifier si un numéro de téléphone existe déjà
+  const checkPhoneDuplicate = (phone, excludeClientId = null) => {
+    // Si le téléphone est vide, pas de vérification
+    if (!phone || !phone.trim()) {
+      return false;
+    }
+
+    const normalizedPhone = phone.trim();
+    
+    // Chercher dans la liste des clients
+    const duplicate = clients.find(client => {
+      // Exclure le client en cours d'édition
+      if (excludeClientId && client.id === excludeClientId) {
+        return false;
+      }
+      
+      // Comparer les téléphones normalisés
+      return client.telephone && client.telephone.trim() === normalizedPhone;
+    });
+
+    return !!duplicate;
   };
 
   // Charger les clients
@@ -127,6 +151,7 @@ const Clients = () => {
     }
     setOpenDialog(true);
     setError('');
+    setPhoneError(''); // ✅ Réinitialiser l'erreur de téléphone
   };
 
   const handleCloseDialog = () => {
@@ -134,16 +159,46 @@ const Clients = () => {
     setSelectedClient(null);
     setFormData({ nom: '', prenom: '', telephone: '' });
     setError('');
+    setPhoneError(''); // ✅ Réinitialiser l'erreur de téléphone
   };
 
   const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+    
+    // ✅ NOUVEAU: Vérifier les doublons de téléphone en temps réel
+    if (name === 'telephone') {
+      setPhoneError(''); // Réinitialiser l'erreur
+      
+      // Si le téléphone n'est pas vide, vérifier les doublons
+      if (value && value.trim()) {
+        const isDuplicate = checkPhoneDuplicate(value, selectedClient?.id);
+        if (isDuplicate) {
+          setPhoneError('Ce numéro de téléphone est déjà utilisé par un autre client');
+        }
+      }
+    }
   };
 
   const handleSubmit = async () => {
+    // Réinitialiser les erreurs
+    setError('');
+    setPhoneError('');
+
+    // Validation des champs obligatoires
     if (!formData.nom.trim() || !formData.prenom.trim()) {
       setError('Le nom et le prénom sont obligatoires');
       return;
+    }
+
+    // ✅ NOUVEAU: Validation du téléphone (doublons)
+    if (formData.telephone && formData.telephone.trim()) {
+      const isDuplicate = checkPhoneDuplicate(formData.telephone, selectedClient?.id);
+      if (isDuplicate) {
+        setPhoneError('Ce numéro de téléphone est déjà utilisé par un autre client');
+        setError('Veuillez corriger les erreurs avant de continuer');
+        return;
+      }
     }
 
     try {
@@ -152,6 +207,7 @@ const Clients = () => {
         prenom: formData.prenom.trim(),
       };
       
+      // ✅ N'ajouter le téléphone que s'il n'est pas vide
       if (formData.telephone && formData.telephone.trim()) {
         dataToSend.telephone = formData.telephone.trim();
       }
@@ -178,7 +234,14 @@ const Clients = () => {
       
       let errorMessage = 'Erreur lors de l\'enregistrement';
       
-      if (error.response?.data?.errors) {
+      // ✅ NOUVEAU: Gestion spécifique des erreurs de téléphone dupliqué
+      if (error.response?.data?.errors?.telephone) {
+        const phoneErrors = error.response.data.errors.telephone;
+        if (Array.isArray(phoneErrors) && phoneErrors.length > 0) {
+          setPhoneError(phoneErrors[0]);
+          errorMessage = 'Ce numéro de téléphone est déjà utilisé';
+        }
+      } else if (error.response?.data?.errors) {
         errorMessage = Object.values(error.response.data.errors).flat().join(', ');
       } else if (error.response?.data?.message) {
         errorMessage = error.response.data.message;
@@ -250,7 +313,7 @@ const Clients = () => {
     }
   };
 
-  // ✅ NOUVEAU : Gérer la fermeture du gestionnaire de données
+  // Gérer la fermeture du gestionnaire de données
   const handleCloseDataManager = () => {
     setOpenDataManager(false);
     loadClients(); // Recharger les données après modifications
@@ -385,7 +448,6 @@ const Clients = () => {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
           <OfflineSyncIndicator />
           
-          {/* ✅ NOUVEAU : Bouton Gérer les données locales */}
           <Button
             variant="outlined"
             startIcon={<Storage />}
@@ -488,6 +550,8 @@ const Clients = () => {
             required
             sx={{ mb: 2 }}
           />
+          
+          {/* ✅ MODIFIÉ: Champ téléphone avec validation de doublons */}
           <TextField
             fullWidth
             label="Téléphone (optionnel)"
@@ -495,7 +559,17 @@ const Clients = () => {
             value={formData.telephone}
             onChange={handleChange}
             placeholder="Ex: +225 01 02 03 04 05"
-            helperText="Le numéro de téléphone est optionnel"
+            error={!!phoneError}
+            helperText={
+              phoneError || 
+              "Le numéro de téléphone est optionnel. Si renseigné, il doit être unique."
+            }
+            sx={{
+              '& .MuiFormHelperText-root.Mui-error': {
+                color: 'error.main',
+                fontWeight: 600,
+              }
+            }}
           />
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -505,6 +579,7 @@ const Clients = () => {
           <Button 
             onClick={handleSubmit} 
             variant="contained"
+            disabled={!!phoneError} // ✅ Désactiver si erreur de téléphone
           >
             Enregistrer
           </Button>
@@ -565,7 +640,7 @@ const Clients = () => {
         </DialogActions>
       </Dialog>
 
-      {/* ✅ NOUVEAU : Dialogue de gestion des données locales */}
+      {/* Dialogue de gestion des données locales */}
       <LocalDataManager 
         open={openDataManager}
         onClose={handleCloseDataManager}
