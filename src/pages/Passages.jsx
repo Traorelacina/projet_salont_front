@@ -71,7 +71,7 @@ import {
   CloudDone,
   WifiOff,
   Print,
- 
+  AccessTime,
 } from '@mui/icons-material';
 import { prestationsAPI, usersAPI } from '../services/api';
 import { useOfflineClient } from '../hooks/useOfflineClient';
@@ -588,7 +588,7 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
               }
             }}
           >
-            Date et heure
+            Date
           </Typography>
           <Typography 
             sx={{ 
@@ -604,7 +604,46 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
           >
             {format(
               new Date(receiptData.date_passage || receiptData.date_paiement || receiptData.created_at), 
-              'dd/MM/yyyy HH:mm',
+              'dd/MM/yyyy',
+              { locale: fr }
+            )}
+          </Typography>
+
+          <Typography 
+            sx={{ 
+              fontSize: '10px',
+              color: '#666',
+              textTransform: 'uppercase',
+              mb: 0.5,
+              fontWeight: 600,
+              letterSpacing: '0.3px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+              gap: 0.5,
+              '@media print': {
+                color: '#000',
+                justifyContent: 'flex-end',
+              }
+            }}
+          >
+            <AccessTime sx={{ fontSize: 12 }} />
+            Heure
+          </Typography>
+          <Typography 
+            sx={{ 
+              fontSize: { xs: '14px', sm: '16px' },
+              fontWeight: 'bold',
+              color: '#333',
+              '@media print': {
+                color: '#000',
+                fontSize: '16px',
+              }
+            }}
+          >
+            {format(
+              new Date(receiptData.date_passage || receiptData.date_paiement || receiptData.created_at), 
+              'HH:mm',
               { locale: fr }
             )}
           </Typography>
@@ -818,7 +857,7 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
         </tbody>
       </Box>
 
-      {/* Totaux - SECTION CORRIGÉE */}
+      {/* Totaux */}
       <Box sx={{ 
         mt: 3, 
         textAlign: 'right',
@@ -867,7 +906,7 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
           </Typography>
         </Box>
 
-        {/* Remise appliquée - TOUJOURS AFFICHÉE si > 0 */}
+        {/* Remise appliquée */}
         {montantRemise > 0 && (
           <Box 
             sx={{ 
@@ -931,7 +970,7 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
           </Box>
         )}
 
-        {/* Montant final à payer (APRÈS remise) */}
+        {/* Montant final à payer */}
         <Box 
           sx={{ 
             display: 'flex',
@@ -1046,7 +1085,7 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
         </Grid>
       </Box>
 
-      {/* Badge gratuit - plus visible */}
+      {/* Badge gratuit */}
       {receiptData.est_gratuit && (
         <Box 
           sx={{ 
@@ -1224,13 +1263,11 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
               size: A4;
             }
             
-            /* Assure que les couleurs s'impriment */
             * {
               -webkit-print-color-adjust: exact;
               print-color-adjust: exact;
             }
             
-            /* Évite les coupures dans les tableaux */
             table {
               page-break-inside: auto;
             }
@@ -1240,7 +1277,6 @@ const ReceiptTemplate = ({ receiptData, salon = {} }) => {
             }
           }
           
-          /* Animation pour l'affichage à l'écran */
           @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -1262,17 +1298,16 @@ const ReceiptDialog = ({ open, onClose, receiptData, onPrint }) => {
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [hasAutoPrinted, setHasAutoPrinted] = React.useState(false);
 
-  // ⭐ IMPRESSION AUTOMATIQUE dès l'ouverture du dialogue
+  // Impression automatique dès l'ouverture du dialogue
   React.useEffect(() => {
     if (open && !hasAutoPrinted && receiptData) {
       const timer = setTimeout(() => {
         onPrint();
         setHasAutoPrinted(true);
-      }, 500); // Délai de 500ms pour garantir le rendu complet
+      }, 500);
       return () => clearTimeout(timer);
     }
     
-    // Reset du flag quand le dialogue se ferme
     if (!open) {
       setHasAutoPrinted(false);
     }
@@ -1345,6 +1380,7 @@ const Passages = () => {
     isOnline, 
     createClient, 
     searchClients,
+    getAllClients,
   } = useOfflineClient();
   
   const {
@@ -1378,6 +1414,8 @@ const Passages = () => {
     prenom: '',
     telephone: '',
   });
+  const [phoneError, setPhoneError] = useState(''); // ✅ NOUVEAU: Erreur téléphone
+  const [allClients, setAllClients] = useState([]); // ✅ NOUVEAU: Liste complète des clients
 
   // États pour les prestations sélectionnées
   const [selectedPrestations, setSelectedPrestations] = useState([]);
@@ -1436,6 +1474,37 @@ const Passages = () => {
 
     return () => unsubscribe();
   }, []);
+
+  // ✅ NOUVEAU: Charger tous les clients au démarrage pour la validation des doublons
+  useEffect(() => {
+    const loadAllClients = async () => {
+      try {
+        const result = await getAllClients();
+        if (result.success) {
+          setAllClients(result.data);
+        }
+      } catch (error) {
+        console.error('Error loading all clients:', error);
+      }
+    };
+    
+    loadAllClients();
+  }, [getAllClients]);
+
+  // ✅ NOUVEAU: Fonction de vérification des doublons de téléphone
+  const checkPhoneDuplicate = useCallback((phone) => {
+    if (!phone || !phone.trim()) {
+      return false;
+    }
+
+    const normalizedPhone = phone.trim();
+    
+    const duplicate = allClients.find(client => 
+      client.telephone && client.telephone.trim() === normalizedPhone
+    );
+
+    return !!duplicate;
+  }, [allClients]);
 
   // Afficher une notification
   const showNotification = useCallback((message, severity = 'success') => {
@@ -1595,11 +1664,44 @@ const Passages = () => {
     }
   }, [checkFidelity, showNotification]);
 
-  // Créer un nouveau client avec support hors ligne
+  // ✅ MODIFIÉ: Gestion du changement de téléphone avec validation
+  const handleNewClientChange = useCallback((e) => {
+    const { name, value } = e.target;
+    setNewClientData(prev => ({ ...prev, [name]: value }));
+    
+    // Vérifier les doublons de téléphone en temps réel
+    if (name === 'telephone') {
+      setPhoneError('');
+      
+      if (value && value.trim()) {
+        const isDuplicate = checkPhoneDuplicate(value);
+        if (isDuplicate) {
+          setPhoneError('Ce numéro de téléphone est déjà utilisé par un autre client');
+        }
+      }
+    }
+  }, [checkPhoneDuplicate]);
+
+  // ✅ MODIFIÉ: Créer un nouveau client avec validation des doublons
   const handleCreateClient = useCallback(async () => {
+    // Réinitialiser les erreurs
+    setError('');
+    setPhoneError('');
+
+    // Validation des champs obligatoires
     if (!newClientData.nom || !newClientData.prenom) {
       setError('Le nom et le prénom sont obligatoires');
       return;
+    }
+
+    // Validation du téléphone (doublons)
+    if (newClientData.telephone && newClientData.telephone.trim()) {
+      const isDuplicate = checkPhoneDuplicate(newClientData.telephone);
+      if (isDuplicate) {
+        setPhoneError('Ce numéro de téléphone est déjà utilisé par un autre client');
+        setError('Veuillez corriger les erreurs avant de continuer');
+        return;
+      }
     }
 
     try {
@@ -1608,6 +1710,7 @@ const Passages = () => {
         prenom: newClientData.prenom.trim(),
       };
       
+      // N'ajouter le téléphone que s'il n'est pas vide
       if (newClientData.telephone && newClientData.telephone.trim()) {
         dataToSend.telephone = newClientData.telephone.trim();
       }
@@ -1617,6 +1720,7 @@ const Passages = () => {
       if (result.success) {
         setShowNewClientForm(false);
         setNewClientData({ nom: '', prenom: '', telephone: '' });
+        setPhoneError('');
         setError('');
         
         const message = result.offline 
@@ -1624,17 +1728,37 @@ const Passages = () => {
           : `Client ${result.data.prenom} ${result.data.nom} créé avec succès (${result.data.code_client})`;
         
         showNotification(message, result.offline ? 'info' : 'success');
+        
+        // Recharger la liste complète des clients
+        const updatedClients = await getAllClients();
+        if (updatedClients.success) {
+          setAllClients(updatedClients.data);
+        }
+        
         handleSelectClient(result.data);
       }
     } catch (error) {
       console.error('Error creating client:', error);
-      const errorMessage = error.response?.data?.errors 
-        ? Object.values(error.response.data.errors).flat().join(', ')
-        : error.response?.data?.message || 'Erreur lors de la création du client';
+      
+      let errorMessage = 'Erreur lors de la création du client';
+      
+      // Gestion spécifique des erreurs de téléphone dupliqué
+      if (error.response?.data?.errors?.telephone) {
+        const phoneErrors = error.response.data.errors.telephone;
+        if (Array.isArray(phoneErrors) && phoneErrors.length > 0) {
+          setPhoneError(phoneErrors[0]);
+          errorMessage = 'Ce numéro de téléphone est déjà utilisé';
+        }
+      } else if (error.response?.data?.errors) {
+        errorMessage = Object.values(error.response.data.errors).flat().join(', ');
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      }
+      
       setError(errorMessage);
       showNotification(errorMessage, 'error');
     }
-  }, [newClientData, createClient, handleSelectClient, showNotification]);
+  }, [newClientData, createClient, checkPhoneDuplicate, handleSelectClient, showNotification, getAllClients]);
 
   // Gérer la sélection des prestations
   const handleTogglePrestation = useCallback((prestation) => {
@@ -1726,78 +1850,64 @@ const Passages = () => {
   }, []);
 
   // Fonction pour imprimer le reçu
-const handlePrintReceipt = useCallback(() => {
-  // Créer une classe CSS pour masquer tout sauf le reçu pendant l'impression
-  const style = document.createElement('style');
-  style.id = 'print-receipt-style';
-  style.innerHTML = `
-    @media print {
-      /* Masquer tout le reste de la page */
-      body > *:not(.receipt-printable-wrapper) {
-        display: none !important;
+  const handlePrintReceipt = useCallback(() => {
+    const style = document.createElement('style');
+    style.id = 'print-receipt-style';
+    style.innerHTML = `
+      @media print {
+        body > *:not(.receipt-printable-wrapper) {
+          display: none !important;
+        }
+        
+        .MuiDialog-root,
+        .MuiBackdrop-root,
+        [role="presentation"] {
+          display: none !important;
+        }
+        
+        .receipt-printable-wrapper {
+          display: block !important;
+          position: fixed !important;
+          top: 0 !important;
+          left: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          background: white !important;
+          z-index: 99999 !important;
+        }
+        
+        .receipt-printable {
+          max-width: 100% !important;
+          box-shadow: none !important;
+          margin: 0 !important;
+          padding: 20px !important;
+        }
       }
+    `;
+    
+    document.head.appendChild(style);
+    
+    const receiptElement = document.getElementById('receipt-content');
+    if (receiptElement) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'receipt-printable-wrapper';
+      wrapper.style.display = 'none';
       
-      /* Masquer les dialogues MUI */
-      .MuiDialog-root,
-      .MuiBackdrop-root,
-      [role="presentation"] {
-        display: none !important;
-      }
+      const clone = receiptElement.cloneNode(true);
+      wrapper.appendChild(clone);
       
-      /* Afficher uniquement le reçu */
-      .receipt-printable-wrapper {
-        display: block !important;
-        position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        width: 100% !important;
-        height: 100% !important;
-        background: white !important;
-        z-index: 99999 !important;
-      }
+      document.body.appendChild(wrapper);
       
-      /* Styles spécifiques pour le reçu lors de l'impression */
-      .receipt-printable {
-        max-width: 100% !important;
-        box-shadow: none !important;
-        margin: 0 !important;
-        padding: 20px !important;
-      }
+      wrapper.style.display = 'block';
+      
+      window.print();
+      
+      setTimeout(() => {
+        document.body.removeChild(wrapper);
+        document.head.removeChild(style);
+      }, 100);
     }
-  `;
-  
-  // Ajouter le style au document
-  document.head.appendChild(style);
-  
-  // Wrapper temporaire pour l'impression
-  const receiptElement = document.getElementById('receipt-content');
-  if (receiptElement) {
-    // Créer un wrapper avec la classe spéciale
-    const wrapper = document.createElement('div');
-    wrapper.className = 'receipt-printable-wrapper';
-    wrapper.style.display = 'none'; // Masqué par défaut
-    
-    // Cloner le reçu
-    const clone = receiptElement.cloneNode(true);
-    wrapper.appendChild(clone);
-    
-    // Ajouter au body
-    document.body.appendChild(wrapper);
-    
-    // Afficher le wrapper pour l'impression
-    wrapper.style.display = 'block';
-    
-    // Lancer l'impression
-    window.print();
-    
-    // Nettoyer après l'impression
-    setTimeout(() => {
-      document.body.removeChild(wrapper);
-      document.head.removeChild(style);
-    }, 100);
-  }
-}, []);
-
+  }, []);
 
   // Créer le passage ET le paiement avec impression du reçu
   const handleCreatePassageAndPayment = useCallback(async (shouldPrint = false) => {
@@ -1817,8 +1927,8 @@ const handlePrintReceipt = useCallback(() => {
         client_id: selectedClient.id,
         date_passage: new Date().toISOString(),
         est_gratuit: fidelityInfo?.est_gratuit || false,
-        montant_total: calculateSubtotal, // Montant avant remise
-        montant_remise: calculateRemise, // Montant de la remise
+        montant_total: calculateSubtotal,
+        montant_remise: calculateRemise,
         prestations: selectedPrestations.map(p => ({
           id: p.id,
           prestation_id: p.id,
@@ -1833,7 +1943,7 @@ const handlePrintReceipt = useCallback(() => {
 
       if (!fidelityInfo?.est_gratuit) {
         passageData.paiement = {
-          montant: calculateTotal, // Montant après remise
+          montant: calculateTotal,
           mode_paiement: modePaiement,
           date_paiement: new Date().toISOString(),
         };
@@ -1859,7 +1969,6 @@ const handlePrintReceipt = useCallback(() => {
           
           showNotification(message, result.offline ? 'info' : 'success');
           
-          // Si on doit imprimer, afficher le dialogue du reçu
           if (shouldPrint) {
             setReceiptDialog({
               open: true,
@@ -1869,6 +1978,8 @@ const handlePrintReceipt = useCallback(() => {
                 prestations: selectedPrestations,
                 montant_total: calculateSubtotal,
                 montant_remise: calculateRemise,
+                remise_type: remiseType !== 'aucune' ? remiseType : null,
+                remise_value: remiseType !== 'aucune' ? remiseValue : null,
                 paiement: {
                   ...passageData.paiement,
                   montant_paye: calculateTotal,
@@ -2262,7 +2373,12 @@ const handlePrintReceipt = useCallback(() => {
       {/* Dialogue de création de nouveau client */}
       <Dialog 
         open={showNewClientForm} 
-        onClose={() => setShowNewClientForm(false)} 
+        onClose={() => {
+          setShowNewClientForm(false);
+          setNewClientData({ nom: '', prenom: '', telephone: '' });
+          setPhoneError('');
+          setError('');
+        }} 
         maxWidth="sm" 
         fullWidth
         fullScreen={isMobile}
@@ -2275,7 +2391,12 @@ const handlePrintReceipt = useCallback(() => {
               Nouveau client
             </Box>
             {isMobile && (
-              <IconButton onClick={() => setShowNewClientForm(false)} edge="end">
+              <IconButton onClick={() => {
+                setShowNewClientForm(false);
+                setNewClientData({ nom: '', prenom: '', telephone: '' });
+                setPhoneError('');
+                setError('');
+              }} edge="end">
                 <Close />
               </IconButton>
             )}
@@ -2295,13 +2416,15 @@ const handlePrintReceipt = useCallback(() => {
               </Alert>
             </Fade>
           )}
+          
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12}>
               <TextField
                 fullWidth
                 label="Prénom"
+                name="prenom"
                 value={newClientData.prenom}
-                onChange={(e) => setNewClientData({ ...newClientData, prenom: e.target.value })}
+                onChange={handleNewClientChange}
                 required
               />
             </Grid>
@@ -2309,8 +2432,9 @@ const handlePrintReceipt = useCallback(() => {
               <TextField
                 fullWidth
                 label="Nom"
+                name="nom"
                 value={newClientData.nom}
-                onChange={(e) => setNewClientData({ ...newClientData, nom: e.target.value })}
+                onChange={handleNewClientChange}
                 required
               />
             </Grid>
@@ -2318,16 +2442,27 @@ const handlePrintReceipt = useCallback(() => {
               <TextField
                 fullWidth
                 label="Téléphone (optionnel)"
+                name="telephone"
                 value={newClientData.telephone}
-                onChange={(e) => setNewClientData({ ...newClientData, telephone: e.target.value })}
+                onChange={handleNewClientChange}
                 placeholder="Ex: +225 01 02 03 04 05"
-                helperText="Le numéro de téléphone est optionnel"
+                error={!!phoneError}
+                helperText={
+                  phoneError || 
+                  "Le numéro de téléphone est optionnel. Si renseigné, il doit être unique."
+                }
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
                       <Phone />
                     </InputAdornment>
                   ),
+                }}
+                sx={{
+                  '& .MuiFormHelperText-root.Mui-error': {
+                    color: 'error.main',
+                    fontWeight: 600,
+                  }
                 }}
               />
             </Grid>
@@ -2339,13 +2474,19 @@ const handlePrintReceipt = useCallback(() => {
               onClick={() => {
                 setShowNewClientForm(false);
                 setNewClientData({ nom: '', prenom: '', telephone: '' });
+                setPhoneError('');
                 setError('');
               }}
             >
               Annuler
             </Button>
           )}
-          <Button onClick={handleCreateClient} variant="contained" fullWidth={isMobile}>
+          <Button 
+            onClick={handleCreateClient} 
+            variant="contained" 
+            fullWidth={isMobile}
+            disabled={!!phoneError}
+          >
             Créer et ajouter un passage
           </Button>
         </DialogActions>
@@ -2726,71 +2867,71 @@ const handlePrintReceipt = useCallback(() => {
           </Box>
         </DialogContent>
         <DialogActions sx={{ px: { xs: 2, md: 3 }, pb: 2, flexDirection: { xs: 'column', sm: 'row' }, gap: 1 }}>
-  {!isTablet && (
-    <Button onClick={handleCloseDialog} size="large">
-      Annuler
-    </Button>
-  )}
-  
-  {/* Bouton pour les passages gratuits */}
-  {fidelityInfo?.est_gratuit && (
-    <Button 
-      onClick={() => handleCreatePassageAndPayment(false)} 
-      variant="contained"
-      color="success"
-      disabled={selectedPrestations.length === 0 || creatingPassage}
-      size="large"
-      fullWidth={isMobile}
-      startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <CardGiftcard />}
-      sx={{
-        minWidth: { sm: 200 },
-        position: 'relative',
-        overflow: 'hidden',
-        transition: 'all 0.3s ease',
-        '&:hover': {
-          transform: 'translateY(-2px)',
-          boxShadow: 4,
-        },
-        bgcolor: 'success.main',
-        '&:hover': {
-          bgcolor: 'success.dark',
-        },
-      }}
-    >
-      {creatingPassage 
-        ? 'Traitement en cours...' 
-        : 'Valider le passage gratuit'
-      }
-    </Button>
-  )}
-  
-  {/* Bouton pour les passages payants (inchangé) */}
-  {!fidelityInfo?.est_gratuit && (
-    <Button 
-      onClick={() => handleCreatePassageAndPayment(true)} 
-      variant="contained"
-      disabled={selectedPrestations.length === 0 || creatingPassage}
-      size="large"
-      fullWidth={isMobile}
-      startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <Print />}
-      sx={{
-        minWidth: { sm: 200 },
-        position: 'relative',
-        overflow: 'hidden',
-        transition: 'all 0.3s ease',
-        '&:hover': {
-          transform: 'translateY(-2px)',
-          boxShadow: 4,
-        },
-      }}
-    >
-      {creatingPassage 
-        ? 'Traitement en cours...' 
-        : 'Confirmer et imprimer le reçu'
-      }
-    </Button>
-  )}
-</DialogActions>
+          {!isTablet && (
+            <Button onClick={handleCloseDialog} size="large">
+              Annuler
+            </Button>
+          )}
+          
+          {/* Bouton pour les passages gratuits */}
+          {fidelityInfo?.est_gratuit && (
+            <Button 
+              onClick={() => handleCreatePassageAndPayment(false)} 
+              variant="contained"
+              color="success"
+              disabled={selectedPrestations.length === 0 || creatingPassage}
+              size="large"
+              fullWidth={isMobile}
+              startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <CardGiftcard />}
+              sx={{
+                minWidth: { sm: 200 },
+                position: 'relative',
+                overflow: 'hidden',
+                transition: 'all 0.3s ease',
+                '&:hover': {
+                  transform: 'translateY(-2px)',
+                  boxShadow: 4,
+                },
+                bgcolor: 'success.main',
+                '&:hover': {
+                  bgcolor: 'success.dark',
+                },
+              }}
+            >
+              {creatingPassage 
+                ? 'Traitement en cours...' 
+                : 'Valider le passage gratuit'
+              }
+            </Button>
+          )}
+          
+          {/* Bouton pour les passages payants */}
+          {!fidelityInfo?.est_gratuit && (
+            <Button 
+              onClick={() => handleCreatePassageAndPayment(true)} 
+              variant="contained"
+              disabled={selectedPrestations.length === 0 || creatingPassage}
+              size="large"
+              fullWidth={isMobile}
+              startIcon={creatingPassage ? <CircularProgress size={20} color="inherit" /> : <Print />}
+              sx={{
+                minWidth: { sm: 200 },
+                position: 'relative',
+                overflow: 'hidden',
+                transition: 'all 0.3s ease',
+                '&:hover': {
+                  transform: 'translateY(-2px)',
+                  boxShadow: 4,
+                },
+              }}
+            >
+              {creatingPassage 
+                ? 'Traitement en cours...' 
+                : 'Confirmer et imprimer le reçu'
+              }
+            </Button>
+          )}
+        </DialogActions>
       </Dialog>
 
       {/* Dialogue de confirmation de suppression */}
