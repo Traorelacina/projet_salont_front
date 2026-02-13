@@ -355,9 +355,18 @@ const Statistiques = () => {
   const [rapportCoiffeurs, setRapportCoiffeurs] = useState(null);
 
   // Dates pour les filtres
-  const [dateJournaliere, setDateJournaliere] = useState(format(new Date(), 'yyyy-MM-dd'));
-  const [dateDebut, setDateDebut] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
-  const [dateFin, setDateFin] = useState(format(endOfMonth(new Date()), 'yyyy-MM-dd'));
+  const aujourdhui = new Date();
+  const debutMois = startOfMonth(aujourdhui);
+  const finMois = endOfMonth(aujourdhui);
+  
+  // Si on est dans le mois en cours, la date de fin est aujourd'hui, sinon c'est la fin du mois
+  const dateFiParDefaut = aujourdhui.getMonth() === debutMois.getMonth() 
+    ? aujourdhui 
+    : finMois;
+  
+  const [dateJournaliere, setDateJournaliere] = useState(format(aujourdhui, 'yyyy-MM-dd'));
+  const [dateDebut, setDateDebut] = useState(format(debutMois, 'yyyy-MM-dd'));
+  const [dateFin, setDateFin] = useState(format(dateFiParDefaut, 'yyyy-MM-dd'));
 
   useEffect(() => {
     loadInitialData();
