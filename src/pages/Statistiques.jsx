@@ -46,14 +46,16 @@ import {
   EmojiEvents,
   PersonAdd,
   WorkOutline,
+  Warning,
+  Info,
 } from '@mui/icons-material';
 import { statsAPI } from '../services/api';
-import { format, startOfMonth, endOfMonth } from 'date-fns';
+import { format, startOfMonth, endOfMonth, isAfter, isBefore, isValid, parseISO, differenceInDays } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
 
-// 🔧 CORRECTION TEMPORAIRE: Fonction pour ajuster la date de fin
+// CORRECTION TEMPORAIRE: Fonction pour ajuster la date de fin
 // Cette fonction ajoute un jour à la date de fin pour s'assurer que le jour actuel
 // est inclus dans les rapports de période
 // TODO: Retirer cette fonction une fois que le backend sera corrigé pour utiliser <= au lieu de <
@@ -62,6 +64,45 @@ const ajusterDateFin = (dateStr) => {
   // Ajouter un jour pour inclure toute la journée dans le filtre
   date.setDate(date.getDate() + 1);
   return format(date, 'yyyy-MM-dd');
+};
+
+// Fonction de validation des dates
+const validerDates = (dateDebut, dateFin) => {
+  const errors = [];
+  
+  // Vérifier que les dates sont valides
+  const debut = parseISO(dateDebut);
+  const fin = parseISO(dateFin);
+  
+  if (!isValid(debut)) {
+    errors.push('La date de début n\'est pas valide');
+  }
+  
+  if (!isValid(fin)) {
+    errors.push('La date de fin n\'est pas valide');
+  }
+  
+  // Vérifier que la date de début n'est pas après la date de fin
+  if (isValid(debut) && isValid(fin) && isAfter(debut, fin)) {
+    errors.push('La date de début ne peut pas être après la date de fin');
+  }
+  
+  // Vérifier que les dates ne sont pas dans le futur
+  const aujourdhui = new Date();
+  if (isValid(debut) && isAfter(debut, aujourdhui)) {
+    errors.push('La date de début ne peut pas être dans le futur');
+  }
+  
+  if (isValid(fin) && isAfter(fin, aujourdhui)) {
+    errors.push('La date de fin ne peut pas être dans le futur');
+  }
+  
+  // Avertissement si la période est trop longue (plus d'un an)
+  if (isValid(debut) && isValid(fin) && differenceInDays(fin, debut) > 365) {
+    errors.push('La période sélectionnée dépasse un an, les performances peuvent être affectées');
+  }
+  
+  return errors;
 };
 
 // Carte de statistique améliorée avec animation
@@ -155,7 +196,7 @@ const AnimatedTable = ({ children, title, subtitle, exportable, exportData, expo
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
 
   const handleExport = async () => {
-    if (!exportData) {
+    if (!exportData || exportData.length === 0) {
       setSnackbar({
         open: true,
         message: 'Aucune donnée à exporter',
@@ -264,11 +305,46 @@ const AnimatedTable = ({ children, title, subtitle, exportable, exportData, expo
   );
 };
 
+// Composant pour afficher un message d'absence de données
+const EmptyDataMessage = ({ icon: Icon, message, subtitle }) => {
+  const theme = useTheme();
+  
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.9 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.3 }}
+    >
+      <Box 
+        sx={{ 
+          py: 8, 
+          px: 3,
+          textAlign: 'center',
+          borderRadius: 2,
+          background: `linear-gradient(135deg, ${alpha(theme.palette.info.main, 0.05)} 0%, ${alpha(theme.palette.info.main, 0.02)} 100%)`,
+          border: `2px dashed ${alpha(theme.palette.info.main, 0.2)}`,
+        }}
+      >
+        <Icon sx={{ fontSize: 80, color: alpha(theme.palette.info.main, 0.3), mb: 2 }} />
+        <Typography variant="h6" color="text.secondary" sx={{ mb: 1, fontWeight: 600 }}>
+          {message}
+        </Typography>
+        {subtitle && (
+          <Typography variant="body2" color="text.secondary">
+            {subtitle}
+          </Typography>
+        )}
+      </Box>
+    </motion.div>
+  );
+};
+
 const Statistiques = () => {
   const theme = useTheme();
   const [tabValue, setTabValue] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [validationErrors, setValidationErrors] = useState([]);
   const [exportLoading, setExportLoading] = useState(false);
   
   // État pour les différents rapports
@@ -292,12 +368,40 @@ const Statistiques = () => {
   };
 
   const loadRapportJournalier = async (date = dateJournaliere) => {
+    // Validation de la date
+    const dateObj = parseISO(date);
+    if (!isValid(dateObj)) {
+      setError('La date sélectionnée n\'est pas valide');
+      return;
+    }
+    
+    if (isAfter(dateObj, new Date())) {
+      setError('La date ne peut pas être dans le futur');
+      return;
+    }
+    
     setLoading(true);
     setError('');
+    setValidationErrors([]);
+    
     try {
       const response = await statsAPI.daily(date);
       if (response.data.success) {
-        setRapportJournalier(response.data.data);
+        const data = response.data.data;
+        
+        // Vérifier s'il y a des données
+        const hasData = data.resume && (
+          data.resume.nombre_clients > 0 || 
+          data.resume.chiffre_affaires > 0 ||
+          (data.repartition_prestations && data.repartition_prestations.length > 0) ||
+          (data.repartition_paiements && data.repartition_paiements.length > 0)
+        );
+        
+        if (!hasData) {
+          setValidationErrors([`Aucune activité enregistrée pour le ${format(dateObj, 'dd/MM/yyyy', { locale: fr })}`]);
+        }
+        
+        setRapportJournalier(data);
       }
     } catch (error) {
       console.error('Error loading daily report:', error);
@@ -307,17 +411,44 @@ const Statistiques = () => {
     }
   };
 
-  // 🔧 CORRIGÉ: Ajout de l'ajustement de date pour inclure le jour actuel
   const loadRapportPeriode = async () => {
+    // Validation des dates
+    const errors = validerDates(dateDebut, dateFin);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    
     setLoading(true);
     setError('');
+    setValidationErrors([]);
+    
     try {
       // Ajuster la date de fin pour inclure le jour complet
       const dateFinAjustee = ajusterDateFin(dateFin);
       
       const response = await statsAPI.period(dateDebut, dateFinAjustee);
       if (response.data.success) {
-        setRapportPeriode(response.data.data);
+        const data = response.data.data;
+        
+        // Vérifier s'il y a des données
+        const hasData = data.resume && (
+          data.resume.nombre_clients_uniques > 0 || 
+          data.resume.total_passages > 0 ||
+          data.resume.chiffre_affaires_total > 0
+        );
+        
+        if (!hasData) {
+          const debut = parseISO(dateDebut);
+          const fin = parseISO(dateFin);
+          const periode = differenceInDays(fin, debut) === 0 
+            ? `le ${format(debut, 'dd/MM/yyyy', { locale: fr })}`
+            : `du ${format(debut, 'dd/MM/yyyy', { locale: fr })} au ${format(fin, 'dd/MM/yyyy', { locale: fr })}`;
+          
+          setValidationErrors([`Aucune activité enregistrée pour la période ${periode}`]);
+        }
+        
+        setRapportPeriode(data);
       }
     } catch (error) {
       console.error('Error loading period report:', error);
@@ -327,10 +458,18 @@ const Statistiques = () => {
     }
   };
 
-  // 🔧 CORRIGÉ: Ajout de l'ajustement de date pour inclure le jour actuel
   const loadRapportPrestations = async () => {
+    // Validation des dates
+    const errors = validerDates(dateDebut, dateFin);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    
     setLoading(true);
     setError('');
+    setValidationErrors([]);
+    
     try {
       // Ajuster la date de fin pour inclure le jour complet
       const dateFinAjustee = ajusterDateFin(dateFin);
@@ -341,7 +480,20 @@ const Statistiques = () => {
       });
       
       if (response.data.success) {
-        setRapportPrestations(response.data.data);
+        const data = response.data.data;
+        
+        // Vérifier s'il y a des données
+        if (!data || data.length === 0) {
+          const debut = parseISO(dateDebut);
+          const fin = parseISO(dateFin);
+          const periode = differenceInDays(fin, debut) === 0 
+            ? `le ${format(debut, 'dd/MM/yyyy', { locale: fr })}`
+            : `du ${format(debut, 'dd/MM/yyyy', { locale: fr })} au ${format(fin, 'dd/MM/yyyy', { locale: fr })}`;
+          
+          setValidationErrors([`Aucune prestation utilisée pour la période ${periode}`]);
+        }
+        
+        setRapportPrestations(data);
       }
     } catch (error) {
       console.error('Error loading services report:', error);
@@ -354,10 +506,19 @@ const Statistiques = () => {
   const loadRapportFidelite = async () => {
     setLoading(true);
     setError('');
+    setValidationErrors([]);
+    
     try {
       const response = await statsAPI.fidelity();
       if (response.data.success) {
-        setRapportFidelite(response.data.data);
+        const data = response.data.data;
+        
+        // Vérifier s'il y a des données
+        if (!data || data.total_clients === 0) {
+          setValidationErrors(['Aucun client enregistré dans la base de données']);
+        }
+        
+        setRapportFidelite(data);
       }
     } catch (error) {
       console.error('Error loading loyalty report:', error);
@@ -367,10 +528,18 @@ const Statistiques = () => {
     }
   };
 
-  // 🔧 CORRIGÉ: Ajout de l'ajustement de date pour inclure le jour actuel
   const loadRapportCoiffeurs = async () => {
+    // Validation des dates
+    const errors = validerDates(dateDebut, dateFin);
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return;
+    }
+    
     setLoading(true);
     setError('');
+    setValidationErrors([]);
+    
     try {
       // Ajuster la date de fin pour inclure le jour complet
       const dateFinAjustee = ajusterDateFin(dateFin);
@@ -381,7 +550,25 @@ const Statistiques = () => {
       });
       
       if (response.data.success) {
-        setRapportCoiffeurs(response.data.data);
+        const data = response.data.data;
+        
+        // Vérifier s'il y a des données
+        if (!data || data.length === 0) {
+          setValidationErrors(['Aucun coiffeur trouvé dans la base de données']);
+        } else {
+          const hasActivity = data.some(c => c.nombre_prestations > 0);
+          if (!hasActivity) {
+            const debut = parseISO(dateDebut);
+            const fin = parseISO(dateFin);
+            const periode = differenceInDays(fin, debut) === 0 
+              ? `le ${format(debut, 'dd/MM/yyyy', { locale: fr })}`
+              : `du ${format(debut, 'dd/MM/yyyy', { locale: fr })} au ${format(fin, 'dd/MM/yyyy', { locale: fr })}`;
+            
+            setValidationErrors([`Aucune activité enregistrée pour les coiffeurs pour la période ${periode}`]);
+          }
+        }
+        
+        setRapportCoiffeurs(data);
       }
     } catch (error) {
       console.error('Error loading barbers stats:', error);
@@ -394,6 +581,7 @@ const Statistiques = () => {
   const handleTabChange = (event, newValue) => {
     setTabValue(newValue);
     setError('');
+    setValidationErrors([]);
     
     switch (newValue) {
       case 0:
@@ -528,6 +716,8 @@ const Statistiques = () => {
       
       if (data.length > 0) {
         exportToExcel(data, title);
+      } else {
+        setError('Aucune donnée à exporter');
       }
       
     } catch (error) {
@@ -599,7 +789,7 @@ const Statistiques = () => {
             variant="outlined"
             onClick={handleExportGlobal}
             startIcon={<FileDownload />}
-            disabled={!rapportJournalier || exportLoading}
+            disabled={!rapportJournalier || exportLoading || validationErrors.length > 0}
             sx={{
               px: 3,
               py: 1,
@@ -619,7 +809,33 @@ const Statistiques = () => {
         </Box>
       </motion.div>
 
-      {rapportJournalier && (
+      {validationErrors.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Alert 
+            severity="info" 
+            icon={<Info />}
+            sx={{ 
+              mb: 3,
+              borderRadius: 2,
+              border: `1px solid ${alpha(theme.palette.info.main, 0.3)}`,
+            }}
+          >
+            <Box>
+              {validationErrors.map((err, index) => (
+                <Typography key={index} variant="body2">
+                  {err}
+                </Typography>
+              ))}
+            </Box>
+          </Alert>
+        </motion.div>
+      )}
+
+      {rapportJournalier && validationErrors.length === 0 && (
         <>
           <Grid container spacing={3} sx={{ mb: 3 }}>
             <Grid item xs={12} sm={6} md={3}>
@@ -869,7 +1085,7 @@ const Statistiques = () => {
             variant="outlined"
             onClick={handleExportGlobal}
             startIcon={<FileDownload />}
-            disabled={!rapportPeriode || exportLoading}
+            disabled={!rapportPeriode || exportLoading || validationErrors.length > 0}
             sx={{
               px: 3,
               py: 1,
@@ -889,7 +1105,36 @@ const Statistiques = () => {
         </Box>
       </motion.div>
 
-      {rapportPeriode && (
+      {validationErrors.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Alert 
+            severity={validationErrors.some(e => e.includes('ne peut pas')) ? 'error' : 'info'}
+            icon={validationErrors.some(e => e.includes('ne peut pas')) ? <Warning /> : <Info />}
+            sx={{ 
+              mb: 3,
+              borderRadius: 2,
+              border: `1px solid ${alpha(
+                validationErrors.some(e => e.includes('ne peut pas')) ? theme.palette.error.main : theme.palette.info.main, 
+                0.3
+              )}`,
+            }}
+          >
+            <Box>
+              {validationErrors.map((err, index) => (
+                <Typography key={index} variant="body2">
+                  {err}
+                </Typography>
+              ))}
+            </Box>
+          </Alert>
+        </motion.div>
+      )}
+
+      {rapportPeriode && validationErrors.length === 0 && (
         <>
           <Grid container spacing={3} sx={{ mb: 3 }}>
             <Grid item xs={12} sm={6} md={3}>
@@ -1149,7 +1394,7 @@ const Statistiques = () => {
             variant="outlined"
             onClick={handleExportGlobal}
             startIcon={<FileDownload />}
-            disabled={!rapportPrestations || exportLoading}
+            disabled={!rapportPrestations || exportLoading || validationErrors.length > 0}
             sx={{
               px: 3,
               py: 1,
@@ -1169,7 +1414,36 @@ const Statistiques = () => {
         </Box>
       </motion.div>
 
-      {rapportPrestations && (
+      {validationErrors.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Alert 
+            severity={validationErrors.some(e => e.includes('ne peut pas')) ? 'error' : 'info'}
+            icon={validationErrors.some(e => e.includes('ne peut pas')) ? <Warning /> : <Info />}
+            sx={{ 
+              mb: 3,
+              borderRadius: 2,
+              border: `1px solid ${alpha(
+                validationErrors.some(e => e.includes('ne peut pas')) ? theme.palette.error.main : theme.palette.info.main, 
+                0.3
+              )}`,
+            }}
+          >
+            <Box>
+              {validationErrors.map((err, index) => (
+                <Typography key={index} variant="body2">
+                  {err}
+                </Typography>
+              ))}
+            </Box>
+          </Alert>
+        </motion.div>
+      )}
+
+      {rapportPrestations && rapportPrestations.length > 0 && validationErrors.length === 0 && (
         <AnimatedTable 
           title="Statistiques des prestations" 
           subtitle={`${rapportPrestations.length} prestations`}
@@ -1253,16 +1527,6 @@ const Statistiques = () => {
                     </TableCell>
                   </motion.tr>
                 ))}
-                {!rapportPrestations.length && (
-                  <TableRow>
-                    <TableCell colSpan={5} align="center" sx={{ py: 6 }}>
-                      <ContentCut sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
-                      <Typography variant="h6" color="text.secondary">
-                        Aucune prestation trouvée
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
               </TableBody>
             </Table>
           </TableContainer>
@@ -1306,7 +1570,7 @@ const Statistiques = () => {
             variant="outlined"
             onClick={handleExportGlobal}
             startIcon={<FileDownload />}
-            disabled={!rapportFidelite || exportLoading}
+            disabled={!rapportFidelite || exportLoading || validationErrors.length > 0}
             sx={{
               px: 3,
               py: 1.5,
@@ -1326,7 +1590,33 @@ const Statistiques = () => {
         </Box>
       </motion.div>
 
-      {rapportFidelite && (
+      {validationErrors.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Alert 
+            severity="info"
+            icon={<Info />}
+            sx={{ 
+              mb: 3,
+              borderRadius: 2,
+              border: `1px solid ${alpha(theme.palette.info.main, 0.3)}`,
+            }}
+          >
+            <Box>
+              {validationErrors.map((err, index) => (
+                <Typography key={index} variant="body2">
+                  {err}
+                </Typography>
+              ))}
+            </Box>
+          </Alert>
+        </motion.div>
+      )}
+
+      {rapportFidelite && validationErrors.length === 0 && (
         <>
           <Grid container spacing={3} sx={{ mb: 3 }}>
             <Grid item xs={12} sm={6} md={3}>
@@ -1577,7 +1867,7 @@ const Statistiques = () => {
             variant="outlined"
             onClick={handleExportGlobal}
             startIcon={<FileDownload />}
-            disabled={!rapportCoiffeurs || exportLoading}
+            disabled={!rapportCoiffeurs || exportLoading || validationErrors.length > 0}
             sx={{
               px: 3,
               py: 1,
@@ -1597,7 +1887,36 @@ const Statistiques = () => {
         </Box>
       </motion.div>
 
-      {rapportCoiffeurs && (
+      {validationErrors.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Alert 
+            severity={validationErrors.some(e => e.includes('ne peut pas')) ? 'error' : 'info'}
+            icon={validationErrors.some(e => e.includes('ne peut pas')) ? <Warning /> : <Info />}
+            sx={{ 
+              mb: 3,
+              borderRadius: 2,
+              border: `1px solid ${alpha(
+                validationErrors.some(e => e.includes('ne peut pas')) ? theme.palette.error.main : theme.palette.info.main, 
+                0.3
+              )}`,
+            }}
+          >
+            <Box>
+              {validationErrors.map((err, index) => (
+                <Typography key={index} variant="body2">
+                  {err}
+                </Typography>
+              ))}
+            </Box>
+          </Alert>
+        </motion.div>
+      )}
+
+      {rapportCoiffeurs && rapportCoiffeurs.length > 0 && validationErrors.length === 0 && (
         <>
           <Grid container spacing={3} sx={{ mb: 3 }}>
             <Grid item xs={12} sm={6} md={3}>
@@ -1709,7 +2028,7 @@ const Statistiques = () => {
                               </Typography>
                               {index < 3 && (
                                 <Chip 
-                                  label={index === 0 ? "🥇 Meilleur" : index === 1 ? "🥈 2ème" : "🥉 3ème"}
+                                  label={index === 0 ? "Meilleur" : index === 1 ? "2eme" : "3eme"}
                                   size="small"
                                   color={index === 0 ? "warning" : index === 1 ? "info" : "error"}
                                   sx={{ fontWeight: 600, mt: 0.5 }}
@@ -1746,16 +2065,6 @@ const Statistiques = () => {
                         </TableCell>
                       </motion.tr>
                     ))}
-                  {!rapportCoiffeurs.length && (
-                    <TableRow>
-                      <TableCell colSpan={5} align="center" sx={{ py: 6 }}>
-                        <WorkOutline sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
-                        <Typography variant="h6" color="text.secondary">
-                          Aucun coiffeur trouvé
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
                 </TableBody>
               </Table>
             </TableContainer>
@@ -1767,7 +2076,6 @@ const Statistiques = () => {
 
   return (
     <Box>
-      {/* En-tête avec titre et date */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
